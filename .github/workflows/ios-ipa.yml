@@ -83,7 +83,6 @@ jobs:
             /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" "$EXPORT_PLIST"
-            flutter build ios --release --no-codesign
             pushd ios
             xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
               -archivePath "$PWD/build/Runner.xcarchive" archive \
