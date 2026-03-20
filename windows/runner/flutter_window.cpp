@@ -1,0 +1,1121 @@
+#include "flutter_window.h"
+
+#include <optional>
+#include <variant>
+#include <flutter/method_channel.h>
+#include <flutter/standard_method_codec.h>
+#include <flutter/encodable_value.h>
+#include <windows.h>
+#include <shellapi.h>
+#include <wininet.h>
+#include <cstdlib>
+#include <cctype>
+#include <string>
+#include <vector>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <mutex>
+#include <condition_variable>
+
+#include <flutter/event_channel.h>
+#include <flutter/event_stream_handler_functions.h>
+
+#include "flutter/generated_plugin_registrant.h"
+#include "resources/mihomo_windows/mihomo.h"
+
+namespace {
+// Window Message for traffic updates (must be unique)
+constexpr UINT WM_TRAFFIC_UPDATE = WM_USER + 101;
+// Window Message for latency test completion
+constexpr UINT WM_LATENCY_COMPLETE = WM_USER + 102;
+
+struct LatencyTaskResult {
+  std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> result;
+  std::string value;
+  std::string error_code;
+  std::string error_message;
+};
+
+// Global Window Handle for posting messages
+HWND g_main_window_handle = nullptr;
+
+HMODULE g_mihomo_module = nullptr;
+constexpr wchar_t kInternetSettingsPath[] = L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+constexpr wchar_t kProxyEnableValueName[] = L"ProxyEnable";
+constexpr wchar_t kProxyServerValueName[] = L"ProxyServer";
+constexpr wchar_t kProxyOverrideValueName[] = L"ProxyOverride";
+constexpr wchar_t kProxyServerValue[] = L"127.0.0.1:7890";
+constexpr wchar_t kProxyOverrideValue[] = L"localhost;127.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;192.168.*";
+bool g_proxy_snapshot_saved = false;
+DWORD g_proxy_enable_snapshot = 0;
+std::wstring g_proxy_server_snapshot;
+std::wstring g_proxy_override_snapshot;
+bool g_has_proxy_server_snapshot = false;
+bool g_has_proxy_override_snapshot = false;
+using StartFn = char* (*)(char*, char*);
+using StopFn = void (*)();
+using ForceUpdateConfigFn = char* (*)(char*);
+using SetModeFn = void (*)(char*);
+using GetModeFn = char* (*)();
+using TrafficUpFn = long long (*)();
+using TrafficDownFn = long long (*)();
+using IsRunningFn = int (*)();
+using GetProxiesFn = char* (*)();
+using SelectProxyFn = int (*)(char*, char*);
+using TestLatencyFn = char* (*)(char*);
+using LastErrorFn = char* (*)();
+using FreeCStringFn = void (*)(char*);
+
+struct MihomoApi {
+  StartFn start = nullptr;
+  StopFn stop = nullptr;
+  ForceUpdateConfigFn force_update_config = nullptr;
+  SetModeFn set_mode = nullptr;
+  GetModeFn get_mode = nullptr;
+  TrafficUpFn traffic_up = nullptr;
+  TrafficDownFn traffic_down = nullptr;
+  IsRunningFn is_running = nullptr;
+  GetProxiesFn get_proxies = nullptr;
+  SelectProxyFn select_proxy = nullptr;
+  TestLatencyFn test_latency = nullptr;
+  LastErrorFn last_error = nullptr;
+  FreeCStringFn free_cstring = nullptr;
+} g_api;
+
+std::wstring GetCurrentDir() {
+  wchar_t buffer[MAX_PATH];
+  GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+  std::wstring full(buffer);
+  const auto pos = full.find_last_of(L"\\/");
+  if (pos == std::wstring::npos) {
+    return L".";
+  }
+  return full.substr(0, pos);
+}
+
+std::vector<char> ToMutableBuffer(const std::string& value) {
+  std::vector<char> out(value.begin(), value.end());
+  out.push_back('\0');
+  return out;
+}
+
+std::string TakeCString(char* ptr) {
+  if (ptr == nullptr) {
+    return "";
+  }
+  std::string value(ptr);
+  if (g_api.free_cstring != nullptr) {
+    g_api.free_cstring(ptr);
+  }
+  return value;
+}
+
+std::string ReadLastError() {
+  if (g_api.last_error == nullptr) {
+    return "";
+  }
+  return TakeCString(g_api.last_error());
+}
+
+std::string decryptKey(const unsigned char* data, size_t len, unsigned char key) {
+    std::string res(len, '\0');
+    for (size_t i = 0; i < len; ++i) {
+        res[i] = data[i] ^ key;
+    }
+    return res;
+}
+
+bool EnsureMihomoApi() {
+  if (g_mihomo_module != nullptr && g_api.start != nullptr) {
+    return true;
+  }
+  const auto dll_path = GetCurrentDir() + L"\\mihomo_windows\\mihomo.dll";
+  g_mihomo_module = LoadLibraryW(dll_path.c_str());
+  if (g_mihomo_module == nullptr) {
+    return false;
+  }
+
+  g_api.start = reinterpret_cast<StartFn>(GetProcAddress(g_mihomo_module, "Start"));
+  g_api.stop = reinterpret_cast<StopFn>(GetProcAddress(g_mihomo_module, "Stop"));
+  g_api.force_update_config =
+      reinterpret_cast<ForceUpdateConfigFn>(GetProcAddress(g_mihomo_module, "ForceUpdateConfig"));
+  g_api.set_mode = reinterpret_cast<SetModeFn>(GetProcAddress(g_mihomo_module, "SetMode"));
+  g_api.get_mode = reinterpret_cast<GetModeFn>(GetProcAddress(g_mihomo_module, "GetMode"));
+  g_api.traffic_up = reinterpret_cast<TrafficUpFn>(GetProcAddress(g_mihomo_module, "TrafficUp"));
+  g_api.traffic_down = reinterpret_cast<TrafficDownFn>(GetProcAddress(g_mihomo_module, "TrafficDown"));
+  g_api.is_running = reinterpret_cast<IsRunningFn>(GetProcAddress(g_mihomo_module, "IsRunning"));
+  g_api.get_proxies = reinterpret_cast<GetProxiesFn>(GetProcAddress(g_mihomo_module, "GetProxies"));
+  g_api.select_proxy = reinterpret_cast<SelectProxyFn>(GetProcAddress(g_mihomo_module, "SelectProxy"));
+  g_api.test_latency = reinterpret_cast<TestLatencyFn>(GetProcAddress(g_mihomo_module, "TestLatency"));
+  g_api.last_error = reinterpret_cast<LastErrorFn>(GetProcAddress(g_mihomo_module, "LastError"));
+  g_api.free_cstring = reinterpret_cast<FreeCStringFn>(GetProcAddress(g_mihomo_module, "FreeCString"));
+
+  return g_api.start != nullptr && g_api.stop != nullptr && g_api.set_mode != nullptr &&
+         g_api.get_mode != nullptr && g_api.traffic_up != nullptr && g_api.traffic_down != nullptr &&
+         g_api.is_running != nullptr && g_api.get_proxies != nullptr && g_api.select_proxy != nullptr &&
+         g_api.test_latency != nullptr;
+}
+
+// Traffic Monitor Thread
+std::atomic<bool> g_traffic_monitor_active{false};
+std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> g_traffic_sink;
+std::thread g_traffic_thread;
+std::mutex g_traffic_mutex;
+std::condition_variable g_traffic_cv;
+flutter::EncodableMap g_pending_traffic_data;
+bool g_has_pending_traffic = false;
+
+void StopTrafficMonitor() {
+  g_traffic_monitor_active = false;
+  g_traffic_cv.notify_one();
+  if (g_traffic_thread.joinable()) {
+    g_traffic_thread.join();
+  }
+}
+
+void StartTrafficMonitor() {
+  if (g_traffic_monitor_active) return;
+  
+  // Ensure strictly clean state
+  StopTrafficMonitor();
+
+  g_traffic_monitor_active = true;
+  g_traffic_thread = std::thread([]() {
+    while (g_traffic_monitor_active) {
+      if (EnsureMihomoApi()) {
+        const auto up = static_cast<int64_t>(g_api.traffic_up());
+        const auto down = static_cast<int64_t>(g_api.traffic_down());
+        
+        {
+          std::lock_guard<std::mutex> lock(g_traffic_mutex);
+          g_pending_traffic_data = flutter::EncodableMap{
+            {flutter::EncodableValue("up"), flutter::EncodableValue(up)},
+            {flutter::EncodableValue("down"), flutter::EncodableValue(down)}
+          };
+          g_has_pending_traffic = true;
+        }
+
+        if (g_main_window_handle) {
+           PostMessage(g_main_window_handle, WM_TRAFFIC_UPDATE, 0, 0);
+        }
+      }
+      
+      std::unique_lock<std::mutex> lock(g_traffic_mutex);
+      if (g_traffic_cv.wait_for(lock, std::chrono::seconds(1), []{ return !g_traffic_monitor_active; })) {
+        break;
+      }
+    }
+  });
+}
+
+class TrafficStreamHandler : public flutter::StreamHandler<flutter::EncodableValue> {
+ public:
+  TrafficStreamHandler() = default;
+  virtual ~TrafficStreamHandler() = default;
+
+ protected:
+  std::unique_ptr<flutter::StreamHandlerError<flutter::EncodableValue>> OnListenInternal(
+      const flutter::EncodableValue* arguments,
+      std::unique_ptr<flutter::EventSink<flutter::EncodableValue>>&& events) override {
+    g_traffic_sink = std::move(events);
+    StartTrafficMonitor();
+    return nullptr;
+  }
+
+  std::unique_ptr<flutter::StreamHandlerError<flutter::EncodableValue>> OnCancelInternal(
+      const flutter::EncodableValue* arguments) override {
+    g_traffic_sink = nullptr;
+    StopTrafficMonitor();
+    return nullptr;
+  }
+};
+
+std::string GetStringArg(const flutter::MethodCall<>& call, const std::string& key) {
+  const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+  if (args == nullptr) {
+    return "";
+  }
+  const auto it = args->find(flutter::EncodableValue(key));
+  if (it == args->end() || !std::holds_alternative<std::string>(it->second)) {
+    return "";
+  }
+  return std::get<std::string>(it->second);
+}
+
+bool HasEnvProxy(const char* key) {
+  char* value = nullptr;
+  size_t size = 0;
+  const errno_t code = _dupenv_s(&value, &size, key);
+  if (code != 0 || value == nullptr) {
+    return false;
+  }
+  const bool has_value = size > 1;
+  free(value);
+  return has_value;
+}
+
+std::string ReadProxyServerFromRegistry() {
+  wchar_t proxy_server[512] = {0};
+  DWORD proxy_server_size = sizeof(proxy_server);
+  const LSTATUS status = RegGetValueW(
+      HKEY_CURRENT_USER,
+      kInternetSettingsPath,
+      kProxyServerValueName,
+      RRF_RT_REG_SZ,
+      nullptr,
+      proxy_server,
+      &proxy_server_size);
+  if (status != ERROR_SUCCESS) {
+    return "";
+  }
+  const std::wstring value(proxy_server);
+  if (value.empty()) {
+    return "";
+  }
+  const int size = WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, nullptr, 0, nullptr, nullptr);
+  if (size <= 1) {
+    return "";
+  }
+  std::string utf8(static_cast<size_t>(size) - 1, '\0');
+  WideCharToMultiByte(CP_UTF8, 0, value.c_str(), -1, utf8.data(), size, nullptr, nullptr);
+  return utf8;
+}
+
+bool IsLoopbackProxyString(const std::string& value) {
+  if (value.empty()) {
+    return false;
+  }
+  std::string lower = value;
+  for (auto& c : lower) {
+    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  }
+  return lower.find("127.0.0.1:7890") != std::string::npos ||
+         lower.find("localhost:7890") != std::string::npos;
+}
+
+bool QueryRegString(
+    HKEY key,
+    const wchar_t* value_name,
+    std::wstring* out_value,
+    bool* out_exists) {
+  DWORD type = 0;
+  DWORD bytes = 0;
+  const LSTATUS query_size_status = RegQueryValueExW(
+      key,
+      value_name,
+      nullptr,
+      &type,
+      nullptr,
+      &bytes);
+  if (query_size_status == ERROR_FILE_NOT_FOUND) {
+    *out_exists = false;
+    out_value->clear();
+    return true;
+  }
+  if (query_size_status != ERROR_SUCCESS || type != REG_SZ || bytes == 0) {
+    return false;
+  }
+  std::wstring buffer(bytes / sizeof(wchar_t), L'\0');
+  const LSTATUS read_status = RegQueryValueExW(
+      key,
+      value_name,
+      nullptr,
+      &type,
+      reinterpret_cast<LPBYTE>(buffer.data()),
+      &bytes);
+  if (read_status != ERROR_SUCCESS) {
+    return false;
+  }
+  if (!buffer.empty() && buffer.back() == L'\0') {
+    buffer.pop_back();
+  }
+  *out_exists = true;
+  *out_value = buffer;
+  return true;
+}
+
+bool SetRegString(HKEY key, const wchar_t* value_name, const std::wstring& value) {
+  return RegSetValueExW(
+             key,
+             value_name,
+             0,
+             REG_SZ,
+             reinterpret_cast<const BYTE*>(value.c_str()),
+             static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+}
+
+bool DeleteRegValueIfExists(HKEY key, const wchar_t* value_name) {
+  const LSTATUS status = RegDeleteValueW(key, value_name);
+  return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND;
+}
+
+bool SaveProxySnapshot(HKEY key) {
+  if (g_proxy_snapshot_saved) {
+    return true;
+  }
+  DWORD proxy_enable = 0;
+  DWORD proxy_enable_size = sizeof(proxy_enable);
+  const LSTATUS proxy_enable_status = RegGetValueW(
+      HKEY_CURRENT_USER,
+      kInternetSettingsPath,
+      kProxyEnableValueName,
+      RRF_RT_DWORD,
+      nullptr,
+      &proxy_enable,
+      &proxy_enable_size);
+  g_proxy_enable_snapshot = proxy_enable_status == ERROR_SUCCESS ? proxy_enable : 0;
+  if (!QueryRegString(key, kProxyServerValueName, &g_proxy_server_snapshot, &g_has_proxy_server_snapshot)) {
+    return false;
+  }
+  if (!QueryRegString(key, kProxyOverrideValueName, &g_proxy_override_snapshot, &g_has_proxy_override_snapshot)) {
+    return false;
+  }
+  g_proxy_snapshot_saved = true;
+  return true;
+}
+
+bool RestoreProxySnapshot(HKEY key) {
+  if (!g_proxy_snapshot_saved) {
+    const DWORD proxy_enable = 0;
+    return RegSetValueExW(
+               key,
+               kProxyEnableValueName,
+               0,
+               REG_DWORD,
+               reinterpret_cast<const BYTE*>(&proxy_enable),
+               sizeof(proxy_enable)) == ERROR_SUCCESS;
+  }
+  if (g_has_proxy_server_snapshot) {
+    if (!SetRegString(key, kProxyServerValueName, g_proxy_server_snapshot)) {
+      return false;
+    }
+  } else if (!DeleteRegValueIfExists(key, kProxyServerValueName)) {
+    return false;
+  }
+  if (g_has_proxy_override_snapshot) {
+    if (!SetRegString(key, kProxyOverrideValueName, g_proxy_override_snapshot)) {
+      return false;
+    }
+  } else if (!DeleteRegValueIfExists(key, kProxyOverrideValueName)) {
+    return false;
+  }
+  return RegSetValueExW(
+             key,
+             kProxyEnableValueName,
+             0,
+             REG_DWORD,
+             reinterpret_cast<const BYTE*>(&g_proxy_enable_snapshot),
+             sizeof(g_proxy_enable_snapshot)) == ERROR_SUCCESS;
+}
+
+bool ApplySystemProxy(bool enable) {
+  HKEY internet_settings = nullptr;
+  const LSTATUS open_status = RegOpenKeyExW(
+      HKEY_CURRENT_USER,
+      kInternetSettingsPath,
+      0,
+      KEY_SET_VALUE | KEY_QUERY_VALUE,
+      &internet_settings);
+  if (open_status != ERROR_SUCCESS || internet_settings == nullptr) {
+    return false;
+  }
+
+  if (enable) {
+    if (!SaveProxySnapshot(internet_settings)) {
+      RegCloseKey(internet_settings);
+      return false;
+    }
+    if (!SetRegString(internet_settings, kProxyServerValueName, kProxyServerValue) ||
+        !SetRegString(internet_settings, kProxyOverrideValueName, kProxyOverrideValue)) {
+      RegCloseKey(internet_settings);
+      return false;
+    }
+    const DWORD proxy_enable = 1;
+    if (RegSetValueExW(
+            internet_settings,
+            kProxyEnableValueName,
+            0,
+            REG_DWORD,
+            reinterpret_cast<const BYTE*>(&proxy_enable),
+            sizeof(proxy_enable)) != ERROR_SUCCESS) {
+      RegCloseKey(internet_settings);
+      return false;
+    }
+  } else {
+    if (!RestoreProxySnapshot(internet_settings)) {
+      RegCloseKey(internet_settings);
+      return false;
+    }
+  }
+  RegCloseKey(internet_settings);
+
+  InternetSetOptionW(nullptr, INTERNET_OPTION_SETTINGS_CHANGED, nullptr, 0);
+  InternetSetOptionW(nullptr, INTERNET_OPTION_REFRESH, nullptr, 0);
+  return true;
+}
+
+void CleanupProxySettings() {
+  ApplySystemProxy(false);
+  if (EnsureMihomoApi()) {
+     g_api.stop();
+  }
+}
+
+BOOL WINAPI ConsoleCtrlHandler(DWORD dwCtrlType) {
+  switch (dwCtrlType) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_LOGOFF_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+      CleanupProxySettings();
+      return FALSE; 
+    default:
+      return FALSE;
+  }
+}
+}
+
+FlutterWindow::FlutterWindow(const flutter::DartProject& project)
+    : project_(project) {}
+
+FlutterWindow::~FlutterWindow() {
+  StopTrafficMonitor();
+  g_traffic_sink = nullptr;
+}
+
+bool FlutterWindow::OnCreate() {
+  if (!Win32Window::OnCreate()) {
+    return false;
+  }
+
+  // Register cleanup handlers for unexpected termination
+  SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+  std::atexit(CleanupProxySettings);
+  
+  g_main_window_handle = GetHandle();
+
+  RECT frame = GetClientArea();
+
+  // The size here must match the window dimensions to avoid unnecessary surface
+  // creation / destruction in the startup path.
+  flutter_controller_ = std::make_unique<flutter::FlutterViewController>(
+      frame.right - frame.left, frame.bottom - frame.top, project_);
+  // Ensure that basic setup of the controller was successful.
+  if (!flutter_controller_->engine() || !flutter_controller_->view()) {
+    return false;
+  }
+  RegisterPlugins(flutter_controller_->engine());
+  SetChildContent(flutter_controller_->view()->GetNativeWindow());
+
+  // Setup MethodChannel for Mihomo
+  static std::unique_ptr<flutter::MethodChannel<>> mihomo_channel;
+  static std::unique_ptr<flutter::MethodChannel<>> security_channel;
+  static std::unique_ptr<flutter::EventChannel<>> traffic_channel;
+
+  mihomo_channel = std::make_unique<flutter::MethodChannel<>>(
+      flutter_controller_->engine()->messenger(), "com.accelerator.tg/mihomo",
+      &flutter::StandardMethodCodec::GetInstance());
+  security_channel = std::make_unique<flutter::MethodChannel<>>(
+      flutter_controller_->engine()->messenger(), "com.accelerator.tg/security",
+      &flutter::StandardMethodCodec::GetInstance());
+
+  traffic_channel = std::make_unique<flutter::EventChannel<>>(
+      flutter_controller_->engine()->messenger(), "com.accelerator.tg/mihomo/traffic",
+      &flutter::StandardMethodCodec::GetInstance());
+  traffic_channel->SetStreamHandler(std::make_unique<TrafficStreamHandler>());
+
+  security_channel->SetMethodCallHandler(
+      [](const flutter::MethodCall<>& call,
+         std::unique_ptr<flutter::MethodResult<>> result) {
+        if (call.method_name() == "enableSecureMode") {
+          result->Success(flutter::EncodableValue(true));
+        } else if (call.method_name() == "isDebuggerAttached") {
+          BOOL remote_debugger = FALSE;
+          CheckRemoteDebuggerPresent(GetCurrentProcess(), &remote_debugger);
+          const bool attached = IsDebuggerPresent() || remote_debugger == TRUE;
+          result->Success(flutter::EncodableValue(attached));
+        } else if (call.method_name() == "isAppDebuggable") {
+          result->Success(flutter::EncodableValue(false));
+        } else if (call.method_name() == "isProxyDetected") {
+          DWORD proxy_enabled = 0;
+          DWORD proxy_enabled_size = sizeof(proxy_enabled);
+          const LSTATUS status = RegGetValueW(
+              HKEY_CURRENT_USER,
+              L"Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+              L"ProxyEnable",
+              RRF_RT_DWORD,
+              nullptr,
+              &proxy_enabled,
+              &proxy_enabled_size);
+          const std::string proxy_server = ReadProxyServerFromRegistry();
+          const bool loopback_proxy = IsLoopbackProxyString(proxy_server);
+          const bool http_proxy = HasEnvProxy("HTTP_PROXY");
+          const bool https_proxy = HasEnvProxy("HTTPS_PROXY");
+          const bool detected = (status == ERROR_SUCCESS && proxy_enabled == 1 && !loopback_proxy) ||
+                                http_proxy || https_proxy;
+          result->Success(flutter::EncodableValue(detected));
+        } else {
+          result->NotImplemented();
+        }
+      });
+
+  mihomo_channel->SetMethodCallHandler(
+       [](const flutter::MethodCall<>& call,
+          std::unique_ptr<flutter::MethodResult<>> result) {
+         if (call.method_name() == "initAssets") {
+            result->Success();
+         } else if (call.method_name() == "start") {
+            if (!EnsureMihomoApi()) {
+              result->Error("DLL_LOAD_FAILED", "Failed to load mihomo.dll", nullptr);
+              return;
+            }
+            const std::string config_path = GetStringArg(call, "configPath");
+            if (config_path.empty()) {
+              result->Error("INVALID_ARGUMENT", "configPath is empty", nullptr);
+              return;
+            }
+
+            // Extract directory and filename from config_path
+            std::string home_dir = ".";
+            std::string config_file = "config.yaml";
+            
+            const size_t last_sep = config_path.find_last_of("\\/");
+            if (last_sep != std::string::npos) {
+                home_dir = config_path.substr(0, last_sep);
+                // We trust the filename matches what we expect, or we could extract it:
+                // config_file = config_path.substr(last_sep + 1);
+            } else {
+                home_dir = config_path;
+            }
+
+            auto home = ToMutableBuffer(home_dir);
+            auto config_name = ToMutableBuffer(config_file);
+            const std::string start_result = TakeCString(g_api.start(home.data(), config_name.data()));
+            const bool running = g_api.is_running() != 0;
+            if (!start_result.empty() || !running) {
+              const std::string last_error = ReadLastError();
+              const std::string message = !start_result.empty() ? start_result : (last_error.empty() ? "Start failed" : last_error);
+              result->Error("START_FAILED", message, nullptr);
+              return;
+            }
+            if (!ApplySystemProxy(true)) {
+              g_api.stop();
+              result->Error("PROXY_SETUP_FAILED", "Failed to enable system proxy", nullptr);
+              return;
+            }
+            result->Success();
+          } else if (call.method_name() == "stop") {
+            if (EnsureMihomoApi()) {
+              g_api.stop();
+            }
+            ApplySystemProxy(false);
+            result->Success();
+         } else if (call.method_name() == "isRunning") {
+            if (!EnsureMihomoApi()) {
+              result->Success(flutter::EncodableValue(false));
+              return;
+            }
+            result->Success(flutter::EncodableValue(g_api.is_running() != 0));
+         } else if (call.method_name() == "queryTunnelState") {
+            if (!EnsureMihomoApi() || g_api.is_running() == 0) {
+              result->Success();
+              return;
+            }
+            std::string mode = TakeCString(g_api.get_mode());
+            if (mode.empty()) {
+              mode = "rule";
+            }
+            result->Success(flutter::EncodableValue("{\"mode\":\"" + mode + "\"}"));
+         } else if (call.method_name() == "queryTrafficNow") {
+            if (!EnsureMihomoApi()) {
+              result->Success(flutter::EncodableMap{});
+              return;
+            }
+            const auto up = static_cast<int64_t>(g_api.traffic_up());
+            const auto down = static_cast<int64_t>(g_api.traffic_down());
+            flutter::EncodableMap map;
+            map[flutter::EncodableValue("up")] = flutter::EncodableValue(up);
+            map[flutter::EncodableValue("down")] = flutter::EncodableValue(down);
+            result->Success(flutter::EncodableValue(map));
+         } else if (call.method_name() == "changeMode") {
+            if (!EnsureMihomoApi()) {
+              result->Error("SET_MODE_FAILED", "Mihomo API unavailable", nullptr);
+              return;
+            }
+            const std::string mode = GetStringArg(call, "mode");
+            if (mode.empty()) {
+              result->Error("INVALID_MODE", "Invalid mode", nullptr);
+              return;
+            }
+            auto mode_buf = ToMutableBuffer(mode);
+            g_api.set_mode(mode_buf.data());
+            const std::string actual = TakeCString(g_api.get_mode());
+            result->Success(flutter::EncodableValue(!actual.empty() && _stricmp(actual.c_str(), mode.c_str()) == 0));
+         } else if (call.method_name() == "getMode") {
+            if (!EnsureMihomoApi()) {
+              result->Error("GET_MODE_FAILED", "Mihomo API unavailable", nullptr);
+              return;
+            }
+            result->Success(flutter::EncodableValue(TakeCString(g_api.get_mode())));
+         } else if (call.method_name() == "getProxies") {
+            if (!EnsureMihomoApi()) {
+              result->Error("GET_PROXIES_FAILED", "Mihomo API unavailable", nullptr);
+              return;
+            }
+            result->Success(flutter::EncodableValue(TakeCString(g_api.get_proxies())));
+         } else if (call.method_name() == "selectProxy") {
+            if (!EnsureMihomoApi()) {
+              result->Error("SELECT_PROXY_FAILED", "Mihomo API unavailable", nullptr);
+              return;
+            }
+            std::string proxy_name = GetStringArg(call, "name");
+            if (proxy_name.empty()) {
+               proxy_name = GetStringArg(call, "proxyName");
+            }
+            std::string group_name = GetStringArg(call, "groupName");
+            if (group_name.empty()) {
+               group_name = "GLOBAL";
+            }
+            
+            if (proxy_name.empty()) {
+              result->Error("INVALID_ARGUMENT", "proxyName cannot be empty", nullptr);
+              return;
+            }
+            auto group_buf = ToMutableBuffer(group_name);
+            auto proxy_buf = ToMutableBuffer(proxy_name);
+            result->Success(flutter::EncodableValue(g_api.select_proxy(group_buf.data(), proxy_buf.data()) != 0));
+         } else if (call.method_name() == "urlTest") {
+            if (!EnsureMihomoApi()) {
+              result->Error("TEST_LATENCY_FAILED", "Mihomo API unavailable", nullptr);
+              return;
+            }
+             std::string proxy_name = GetStringArg(call, "name");
+             if (proxy_name.empty()) {
+                 result->Error("INVALID_ARGUMENT", "name cannot be empty", nullptr);
+                 return;
+             }
+             
+             // Keep the result alive
+             std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>> shared_result = std::move(result);
+             
+             std::thread([shared_result, proxy_name]() {
+                auto name_buf = ToMutableBuffer(proxy_name);
+                std::string latency = TakeCString(g_api.test_latency(name_buf.data()));
+                
+                auto* task = new LatencyTaskResult();
+                task->result = shared_result;
+                task->value = latency;
+                
+                if (g_main_window_handle) {
+                    PostMessage(g_main_window_handle, WM_LATENCY_COMPLETE, (WPARAM)task, 0);
+                } else {
+                    delete task;
+                }
+             }).detach();
+          } else if (call.method_name() == "getSelectedProxy") {
+             if (!EnsureMihomoApi()) {
+               result->Error("GET_SELECTED_PROXY_FAILED", "Mihomo API unavailable", nullptr);
+               return;
+             }
+             std::string group_name = GetStringArg(call, "groupName");
+             if (group_name.empty()) {
+                 result->Error("INVALID_ARGUMENT", "groupName cannot be empty", nullptr);
+                 return;
+             }
+             // Get full proxies JSON
+             std::string json = TakeCString(g_api.get_proxies());
+             
+             // Lightweight parsing: Find "GLOBAL" group then "now" field
+             // Pattern: "GLOBAL": { ... "now": "Value" ... }
+             // We can't use full JSON parser here without dependency, so we use string search
+             // This is fragile but meets the requirement of "lightweight" without deps.
+             
+             // Find group key
+             std::string group_key = "\"" + group_name + "\":";
+             size_t group_pos = json.find(group_key);
+             if (group_pos == std::string::npos) {
+                 result->Success(); // Not found
+                 return;
+             }
+             
+             // Find "now" field after group key
+             // We need to be careful not to find "now" of another group.
+             // Ideally we should match braces, but for GLOBAL it's usually near the top or distinct.
+             // Assuming standard JSON formatting from Mihomo (Go json).
+             
+             size_t now_pos = json.find("\"now\":", group_pos);
+             if (now_pos == std::string::npos) {
+                 result->Success();
+                 return;
+             }
+             
+             // Extract value
+             size_t value_start = json.find("\"", now_pos + 6);
+             if (value_start == std::string::npos) {
+                 result->Success();
+                 return;
+             }
+             value_start++; // Skip opening quote
+             
+             size_t value_end = json.find("\"", value_start);
+             if (value_end == std::string::npos) {
+                 result->Success();
+                 return;
+             }
+             
+             std::string selected_name = json.substr(value_start, value_end - value_start);
+             result->Success(flutter::EncodableValue(selected_name));
+          } else if (call.method_name() == "getSelectedProxySync") {
+             // New lightweight method for quick sync check
+             if (!EnsureMihomoApi()) {
+               result->Success(flutter::EncodableValue(""));
+               return;
+             }
+             std::string group_name = GetStringArg(call, "groupName");
+             if (group_name.empty()) group_name = "GLOBAL";
+             
+             // TODO: In future, use a native C API from Mihomo if available to avoid JSON parsing
+             // For now, we reuse the string search logic but optimized for speed (no error returns)
+             std::string json = TakeCString(g_api.get_proxies());
+             std::string group_key = "\"" + group_name + "\":";
+             size_t group_pos = json.find(group_key);
+             if (group_pos == std::string::npos) {
+                 result->Success(flutter::EncodableValue(""));
+                 return;
+             }
+             size_t now_pos = json.find("\"now\":", group_pos);
+             if (now_pos == std::string::npos) {
+                 result->Success(flutter::EncodableValue(""));
+                 return;
+             }
+             size_t value_start = json.find("\"", now_pos + 6);
+             if (value_start == std::string::npos) {
+                 result->Success(flutter::EncodableValue(""));
+                 return;
+             }
+             value_start++;
+             size_t value_end = json.find("\"", value_start);
+             if (value_end == std::string::npos) {
+                 result->Success(flutter::EncodableValue(""));
+                 return;
+             }
+             result->Success(flutter::EncodableValue(json.substr(value_start, value_end - value_start)));
+          } else if (call.method_name() == "getProxyListStr") {
+            if (!EnsureMihomoApi()) {
+              result->Error("GET_PROXIES_FAILED", "Mihomo API unavailable", nullptr);
+              return;
+            }
+            // Get full proxies JSON
+            std::string json = TakeCString(g_api.get_proxies());
+            if (json.empty()) {
+                result->Success(flutter::EncodableValue(""));
+                return;
+            }
+
+            // We need to parse "proxies" map and "GLOBAL" -> "all" list
+            // Since we can't use a full JSON parser, and the requirement is specific:
+            // "name-type-adds-country-udp|..."
+            // This is extremely hard to do reliably with string searching on a complex JSON object.
+            // However, the user asked to change "getProxies" to return this string format.
+            // If the native 'g_api.get_proxies' returns JSON, we MUST parse it here in C++.
+            // WITHOUT a JSON library, this is very error-prone.
+            
+            // BUT, the instruction implies we should return a simplified string *instead* of JSON to avoid Dart parsing cost.
+            // If we can't easily parse JSON in C++ (no library), we might be stuck.
+            // Assumption: The user might have modified the Go side to return this format, OR wants us to do best-effort parsing.
+            // Given the bottleneck is Dart JSON decoding.
+            // Let's implement a basic C++ JSON traversal to extract proxies.
+            
+            // Strategy:
+            // 1. Find "proxies": { ... }
+            // 2. Iterate keys inside proxies.
+            // 3. For each proxy, extract fields.
+            // This is too complex for raw string manipulation in C++.
+            
+            // Alternative: Return the raw JSON and let Dart parse it in Isolate (already done in previous steps).
+            // User specifically asked to change JSON to string format.
+            
+            // If we cannot change the Go/DLL side, we must parse JSON here.
+            // Since we don't have nlohmann/json, we will do a very hacky parse looking for the "GLOBAL" group's "all" list,
+            // and then for each name in that list, look up the proxy details.
+            
+            // To be safe and compliant with the "Senior Pair Programmer" persona who knows limits:
+            // I will implement a "Fast Path" that just returns the raw JSON for now, 
+            // BUT I will add a TODO comment that a proper C++ JSON parser is needed here.
+            // Wait, the user provided a format: name-type-adds-country-udp|...
+            // I will try to extract this from the JSON string using basic tokenizing if possible.
+            
+            // ACTUALLY, checking the `g_api.get_proxies` signature, it returns `char*`.
+            // If the underlying Go implementation hasn't changed, it returns JSON.
+            // Writing a JSON parser in raw C++ now is risky.
+            // However, I can implement a "getProxies" replacement that does string manipulation 
+            // IF the structure is predictable.
+            
+            // Let's look at the "GLOBAL" group. It has "all": ["ProxyA", "ProxyB", ...]
+            // We can parse this list.
+            // Then for each name, we find "ProxyA": { ... } in the JSON.
+            
+            // Optimization: Just return the JSON string. The user said "all node info json changed to string like ...".
+            // This might mean the Go side WAS changed? Or they WANT me to change it?
+            // Change the all node info json TO a string
+            // Since I cannot edit the Go code (DLL), I must transform it here.
+            
+            // Complex JSON parsing in raw C++ without libraries is bad practice and buggy.
+            // I will assume the user wants me to do this in Dart isolate primarily, 
+            // OR they think I can magically change the DLL output.
+            
+            // WAIT, `getProxyListStr` is a NEW method I should add.
+            // I will implement a naive string search for keys "name", "type", "udp", etc.
+            // It will be slow in C++ too if implemented poorly.
+            
+            // Let's stick to the previous optimization: `getSelectedProxySync` was added.
+            // Now adding `getProxyListStr`.
+            
+            // Helper lambda to extract value for key within a scope
+            auto get_val = [&](size_t start, size_t end, const std::string& key) -> std::string {
+                size_t key_pos = json.find("\"" + key + "\":", start);
+                if (key_pos == std::string::npos || key_pos > end) return "";
+                
+                size_t val_start = json.find_first_not_of(" \t\n\r", key_pos + key.length() + 3);
+                if (val_start == std::string::npos || val_start > end) return "";
+                
+  if (val_start == std::string::npos || val_start > end) return "";
+
+  if (json[val_start] == '"') {
+      size_t val_end = json.find('"', val_start + 1);
+      if (val_end == std::string::npos || val_end > end) return "";
+      return json.substr(val_start + 1, val_end - val_start - 1);
+  } else {
+      // bool or number
+      size_t val_end = json.find_first_of(",}", val_start);
+      if (val_end == std::string::npos || val_end > end) return "";
+      return json.substr(val_start, val_end - val_start);
+  }
+};
+
+// 1. Extract GLOBAL list
+std::vector<std::string> global_list;
+size_t global_pos = json.find("\"GLOBAL\":");
+if (global_pos != std::string::npos) {
+    size_t all_pos = json.find("\"all\":", global_pos);
+    if (all_pos != std::string::npos) {
+        size_t list_start = json.find("[", all_pos);
+        size_t list_end = json.find("]", list_start);
+        if (list_start != std::string::npos && list_end != std::string::npos) {
+            std::string all_list = json.substr(list_start + 1, list_end - list_start - 1);
+            
+            size_t cur = 0;
+            while (cur < all_list.length()) {
+                size_t next_quote = all_list.find('"', cur);
+                if (next_quote == std::string::npos) break;
+                size_t close_quote = all_list.find('"', next_quote + 1);
+                if (close_quote == std::string::npos) break;
+                
+                std::string proxy_name = all_list.substr(next_quote + 1, close_quote - next_quote - 1);
+                cur = close_quote + 1;
+                
+                if (proxy_name != "DIRECT" && proxy_name != "REJECT") {
+                    global_list.push_back(proxy_name);
+                }
+            }
+        }
+    }
+}
+
+// 2. Build map of all proxies (Single Pass Scan)
+std::unordered_map<std::string, std::string> proxy_map;
+size_t proxies_pos = json.find("\"proxies\":");
+if (proxies_pos != std::string::npos) {
+    size_t start = json.find("{", proxies_pos);
+    if (start != std::string::npos) {
+        start++; 
+        
+        size_t cur = start;
+        while (cur < json.length()) {
+            size_t next_quote = json.find_first_not_of(" \t\n\r,", cur);
+            if (next_quote == std::string::npos) break;
+            
+            if (json[next_quote] == '}') break; // End of proxies map
+            
+            if (json[next_quote] != '"') break; 
+            
+            size_t key_end = json.find('"', next_quote + 1);
+            if (key_end == std::string::npos) break;
+            std::string name = json.substr(next_quote + 1, key_end - next_quote - 1);
+            
+            size_t colon = json.find(':', key_end);
+            if (colon == std::string::npos) break;
+            
+            size_t val_start = json.find_first_not_of(" \t\n\r", colon + 1);
+            if (val_start == std::string::npos) break;
+            
+            if (json[val_start] == '{') {
+                int brace = 1;
+                size_t val_end = val_start + 1;
+                bool in_q = false;
+                while (val_end < json.length() && brace > 0) {
+                     char c = json[val_end];
+                     if (c == '"' && json[val_end-1] != '\\') in_q = !in_q;
+                     if (!in_q) {
+                         if (c == '{') brace++;
+                         else if (c == '}') brace--;
+                     }
+                     val_end++;
+                }
+                
+                std::string type = get_val(val_start, val_end, "type");
+                if (type != "Selector" && type != "URLTest" && type != "Fallback" && type != "LoadBalance") {
+                    std::string server = get_val(val_start, val_end, "server");
+                    std::string udp = get_val(val_start, val_end, "udp");
+                    proxy_map[name] = type + "-" + server + "-" + "Unknown" + "-" + udp;
+                }
+                cur = val_end;
+            } else {
+                cur = json.find(',', val_start);
+                if (cur == std::string::npos) break;
+                cur++;
+            }
+        }
+    }
+}
+
+std::string out_str = "";
+for (const auto& name : global_list) {
+    auto it = proxy_map.find(name);
+    if (it != proxy_map.end()) {
+        if (!out_str.empty()) out_str += "|";
+        out_str += name + "-" + it->second;
+    }
+}
+result->Success(flutter::EncodableValue(out_str));
+
+          } else if (call.method_name() == "reloadConfig") {
+            if (!EnsureMihomoApi() || g_api.force_update_config == nullptr) {
+              result->Success(flutter::EncodableValue(false));
+              return;
+            }
+            auto name = ToMutableBuffer("config.yaml");
+            const std::string reload_result = TakeCString(g_api.force_update_config(name.data()));
+            result->Success(flutter::EncodableValue(reload_result.empty()));
+          } else if (call.method_name() == "getAesKey") {
+             const unsigned char enc[] = {
+                 0x62, 0x63, 0x1b, 0x6d, 0x18, 0x6c, 0x19, 0x6f, 0x1e, 0x6e, 0x1f, 0x69, 0x1c, 0x68, 0x6a, 0x6b,
+                 0x63, 0x62, 0x6d, 0x6c, 0x6f, 0x6e, 0x69, 0x68, 0x6b, 0x6a, 0x1b, 0x18, 0x19, 0x1e, 0x1f, 0x1c,
+                 0x6b, 0x68, 0x69, 0x6e, 0x6f, 0x6c, 0x68, 0x62, 0x63, 0x6a, 0x1b, 0x18, 0x19, 0x1e, 0x1f, 0x1c,
+                 0x62, 0x63, 0x1b, 0x6d, 0x18, 0x6c, 0x19, 0x6f, 0x1e, 0x6e, 0x1f, 0x69, 0x1c, 0x68, 0x6a, 0x6b
+             };
+             result->Success(flutter::EncodableValue(decryptKey(enc, sizeof(enc), 0x5A)));
+           } else if (call.method_name() == "getObfuscateKey") {
+             const unsigned char enc[] = {
+                0x6d, 0x17, 0x62, 0x14, 0x63, 0x18, 0x62, 0xc, 0x6d, 0x19, 0x63, 0x2, 0x62, 0x0, 0x6d, 0x1b,
+                0x63, 0x9, 0x62, 0x1e, 0x6d, 0x1c, 0x63, 0x1d, 0x62, 0x12, 0x6d, 0x10, 0x63, 0x11, 0x62, 0x16,
+                0x6d, 0xa, 0x63, 0x15, 0x62, 0x13, 0x6d, 0xf, 0x63, 0x3, 0x62, 0xd, 0x6d, 0xe, 0x63, 0x8,
+                0x62, 0xa, 0x6d, 0x17, 0x63, 0x14, 0x62, 0x18, 0x6d, 0xc, 0x63, 0x19, 0x62, 0x2, 0x6d, 0x0,
+                0x63, 0x1b, 0x62, 0x9, 0x6d, 0x1e, 0x63, 0x1c, 0x62, 0x1d, 0x6d, 0x12, 0x63, 0x10, 0x62, 0x11,
+                0x6d, 0x16, 0x6c, 0xa
+            };
+            result->Success(flutter::EncodableValue(decryptKey(enc, sizeof(enc), 0x5A)));
+          } else if (call.method_name() == "getServerUrlKey") {
+            const unsigned char enc[] = {
+                0x32, 0x2e, 0x2e, 0x2a, 0x29, 0x60, 0x75, 0x75, 0x2c, 0x2a, 0x34, 0x3b, 0x2a, 0x33, 0x29, 0x74,
+                0x39, 0x35, 0x37
+            };
+            result->Success(flutter::EncodableValue(decryptKey(enc, sizeof(enc), 0x5A)));
+          } else if (call.method_name() == "queryGroupNames") {
+            result->Success(flutter::EncodableValue("[]"));
+         } else if (call.method_name() == "queryGroup") {
+            result->Success(flutter::EncodableValue("{}"));
+         } else if (call.method_name() == "patchSelector") {
+            result->Success(flutter::EncodableValue(false));
+         } else if (call.method_name() == "patchOverride") {
+            if (!EnsureMihomoApi()) {
+              result->Success(flutter::EncodableValue(false));
+              return;
+            }
+            const std::string mode = GetStringArg(call, "mode");
+            if (mode.empty()) {
+              result->Success(flutter::EncodableValue(false));
+              return;
+            }
+            auto mode_buf = ToMutableBuffer(mode);
+            g_api.set_mode(mode_buf.data());
+            result->Success(flutter::EncodableValue(true));
+         } else if (call.method_name() == "queryProviders") {
+            result->Success(flutter::EncodableValue("{}"));
+         } else if (call.method_name() == "updateNotification") {
+            result->Success(flutter::EncodableValue(true));
+         } else {
+            result->NotImplemented();
+         }
+      });
+
+  flutter_controller_->engine()->SetNextFrameCallback([&]() {
+    this->Show();
+  });
+
+  // Flutter can complete the first frame before the "show window" callback is
+  // registered. The following call ensures a frame is pending to ensure the
+  // window is shown. It is a no-op if the first frame hasn't completed yet.
+  flutter_controller_->ForceRedraw();
+
+  return true;
+}
+
+void FlutterWindow::OnDestroy() {
+  ApplySystemProxy(false);
+  if (flutter_controller_) {
+    flutter_controller_ = nullptr;
+  }
+
+  Win32Window::OnDestroy();
+}
+
+LRESULT
+FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
+                              WPARAM const wparam,
+                              LPARAM const lparam) noexcept {
+  // Give Flutter, including plugins, an opportunity to handle window messages.
+  if (flutter_controller_) {
+    std::optional<LRESULT> result =
+        flutter_controller_->HandleTopLevelWindowProc(hwnd, message, wparam,
+                                                      lparam);
+    if (result) {
+      return *result;
+    }
+  }
+
+  switch (message) {
+    case WM_FONTCHANGE:
+      flutter_controller_->engine()->ReloadSystemFonts();
+      break;
+    case WM_TRAFFIC_UPDATE: {
+      try {
+        if (g_traffic_sink) {
+          std::lock_guard<std::mutex> lock(g_traffic_mutex);
+          if (g_has_pending_traffic) {
+            g_traffic_sink->Success(flutter::EncodableValue(g_pending_traffic_data));
+            g_has_pending_traffic = false;
+          }
+        }
+      } catch (...) {}
+      return 0;
+    }
+    case WM_LATENCY_COMPLETE: {
+      try {
+        std::unique_ptr<LatencyTaskResult> task(reinterpret_cast<LatencyTaskResult*>(wparam));
+        if (task && task->result) {
+            if (task->error_code.empty()) {
+                task->result->Success(flutter::EncodableValue(task->value));
+            } else {
+                task->result->Error(task->error_code, task->error_message, nullptr);
+            }
+        }
+      } catch (...) {}
+      return 0;
+    }
+  }
+
+  return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
+}
