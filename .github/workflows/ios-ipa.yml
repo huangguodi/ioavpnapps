@@ -45,7 +45,12 @@ jobs:
             security create-keychain -p "" "$KEYCHAIN_PATH"
             security set-keychain-settings "$KEYCHAIN_PATH"
             security unlock-keychain -p "" "$KEYCHAIN_PATH"
-            security import "$CERT_PATH" -P "$IOS_P12_PASSWORD_CLEAN" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            if ! security import "$CERT_PATH" -P "$IOS_P12_PASSWORD_CLEAN" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"; then
+              openssl pkcs12 -in "$CERT_PATH" -passin "pass:$IOS_P12_PASSWORD_CLEAN" -clcerts -nokeys -out "$RUNNER_TEMP/cert.pem"
+              openssl pkcs12 -in "$CERT_PATH" -passin "pass:$IOS_P12_PASSWORD_CLEAN" -nocerts -nodes -out "$RUNNER_TEMP/key.pem"
+              security import "$RUNNER_TEMP/cert.pem" -A -k "$KEYCHAIN_PATH"
+              security import "$RUNNER_TEMP/key.pem" -A -k "$KEYCHAIN_PATH"
+            fi
             security list-keychains -d user -s "$KEYCHAIN_PATH"
             mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
             security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
