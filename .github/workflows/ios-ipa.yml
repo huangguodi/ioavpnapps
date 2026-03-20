@@ -58,6 +58,11 @@ jobs:
             cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
             TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$RUNNER_TEMP/profile.plist")
             GET_TASK_ALLOW=$(/usr/libexec/PlistBuddy -c "Print Entitlements:get-task-allow" "$RUNNER_TEMP/profile.plist")
+            APP_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$RUNNER_TEMP/profile.plist")
+            PROFILE_BUNDLE_ID=${APP_IDENTIFIER#${TEAM_ID}.}
+            if [ -n "$PROFILE_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
+              BUNDLE_ID="$PROFILE_BUNDLE_ID"
+            fi
             EXPORT_METHOD="ad-hoc"
             if [ "$GET_TASK_ALLOW" = "true" ]; then EXPORT_METHOD="development"; fi
             EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
@@ -66,7 +71,35 @@ jobs:
             /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_UUID" "$EXPORT_PLIST"
-            flutter build ipa --release --export-options-plist="$RUNNER_TEMP/ExportOptions.plist"
+            if [ "$EXPORT_METHOD" = "development" ]; then
+              IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*"\(Apple Development[^"]*\)".*/\1/p' | head -n 1)
+            else
+              IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*"\(Apple Distribution[^"]*\)".*/\1/p' | head -n 1)
+              if [ -z "$IDENTITY" ]; then
+                IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*"\(iPhone Distribution[^"]*\)".*/\1/p' | head -n 1)
+              fi
+            fi
+            if [ -z "$IDENTITY" ]; then
+              echo "No matching signing identity found in keychain for method=$EXPORT_METHOD"
+              security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+              exit 1
+            fi
+            flutter build ios --release --no-codesign
+            pushd ios
+            xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
+              -archivePath "$PWD/build/Runner.xcarchive" archive \
+              CODE_SIGN_STYLE=Manual \
+              DEVELOPMENT_TEAM="$TEAM_ID" \
+              PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" \
+              PROVISIONING_PROFILE="$PROFILE_UUID" \
+              PROVISIONING_PROFILE_SPECIFIER="$PROFILE_UUID" \
+              CODE_SIGN_IDENTITY="$IDENTITY" \
+              OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
+            xcodebuild -exportArchive \
+              -archivePath "$PWD/build/Runner.xcarchive" \
+              -exportOptionsPlist "$EXPORT_PLIST" \
+              -exportPath "$PWD/../build/ios/ipa"
+            popd
           else
             flutter build ios --release --no-codesign
             mkdir -p build/ios/ipa/Payload
