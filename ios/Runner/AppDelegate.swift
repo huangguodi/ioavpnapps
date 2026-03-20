@@ -290,15 +290,19 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
         completion([:])
         return
       }
-      session.sendProviderMessage(data) { responseData in
-        guard
-          let responseData = responseData,
-          let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
-        else {
-          completion([:])
-          return
+      do {
+        try session.sendProviderMessage(data) { responseData in
+          guard
+            let responseData = responseData,
+            let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+          else {
+            completion([:])
+            return
+          }
+          completion(object)
         }
-        completion(object)
+      } catch {
+        completion([:])
       }
     }
   }
