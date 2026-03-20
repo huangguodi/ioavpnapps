@@ -386,7 +386,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.accelerator.tg;
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.appinstall.nov.carbon.lam;
 				PRODUCT_NAME = Runner;
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -575,7 +575,7 @@
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
 				);
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
-				PRODUCT_BUNDLE_IDENTIFIER = com.accelerator.tg;
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.appinstall.nov.carbon.lam;
 				PRODUCT_NAME = Runner;
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -606,7 +606,7 @@
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
 				);
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
-				PRODUCT_BUNDLE_IDENTIFIER = com.accelerator.tg;
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.appinstall.nov.carbon.lam;
 				PRODUCT_NAME = Runner;
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
