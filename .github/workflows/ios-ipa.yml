@@ -54,25 +54,12 @@ jobs:
             GET_TASK_ALLOW=$(/usr/libexec/PlistBuddy -c "Print Entitlements:get-task-allow" "$RUNNER_TEMP/profile.plist")
             EXPORT_METHOD="ad-hoc"
             if [ "$GET_TASK_ALLOW" = "true" ]; then EXPORT_METHOD="development"; fi
-            cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-              <dict>
-                <key>method</key>
-                <string>$EXPORT_METHOD</string>
-                <key>signingStyle</key>
-                <string>manual</string>
-                <key>teamID</key>
-                <string>$TEAM_ID</string>
-                <key>provisioningProfiles</key>
-                <dict>
-                  <key>$BUNDLE_ID</key>
-                  <string>$PROFILE_UUID</string>
-                </dict>
-              </dict>
-            </plist>
-            EOF
+            EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
+            /usr/libexec/PlistBuddy -c "Add :method string $EXPORT_METHOD" "$EXPORT_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_UUID" "$EXPORT_PLIST"
             flutter build ipa --release --export-options-plist="$RUNNER_TEMP/ExportOptions.plist"
           else
             flutter build ios --release --no-codesign
