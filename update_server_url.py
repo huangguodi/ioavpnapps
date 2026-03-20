@@ -4,7 +4,7 @@ import sys
 
 # ==============================================================================
 # VPN Server URL Updater
-# 自动修改 Android Native、Windows Native 和 Dart 层的服务端地址（XOR 加密）
+# 自动修改 Android Native、Windows Native、iOS Native 的服务端地址（XOR 加密）
 # ==============================================================================
 
 NATIVE_XOR_KEY = 0x5A
@@ -13,6 +13,7 @@ DART_XOR_KEY = "TGS_VPN_2024_PROD_API_KEY_998877"
 PATHS = {
     "android": "android/app/src/main/cpp/keys.cpp",
     "windows": "windows/runner/flutter_window.cpp",
+    "ios": "ios/Runner/AppDelegate.swift",
     "dart": "lib/services/api_service.dart"
 }
 
@@ -34,6 +35,16 @@ def generate_dart_bytes(url):
     """生成 Dart 层的循环 XOR 加密字节数组"""
     bytes_list = [str(ord(c) ^ ord(DART_XOR_KEY[i % len(DART_XOR_KEY)])) for i, c in enumerate(url)]
     return "[" + ", ".join(bytes_list) + "]"
+
+def generate_swift_bytes(url):
+    """生成 Swift 层的 UInt8 数组格式"""
+    bytes_list = [f"0x{(ord(c) ^ NATIVE_XOR_KEY):02x}" for c in url]
+    formatted = "\n"
+    for i in range(0, len(bytes_list), 16):
+        chunk = ", ".join(bytes_list[i:i + 16])
+        formatted += f"      {chunk},\n"
+    formatted = formatted.rstrip(',\n') + "\n    "
+    return formatted
 
 def update_file(filepath, pattern, new_content):
     """安全地使用正则替换文件中的目标区块"""
@@ -74,6 +85,7 @@ def main():
     print(f"\n🚀 正在将服务端地址更新为: {new_url}\n")
     
     native_bytes_str = generate_native_bytes(new_url)
+    swift_bytes_str = generate_swift_bytes(new_url)
     dart_bytes_str = generate_dart_bytes(new_url)
     
     success_count = 0
@@ -87,14 +99,19 @@ def main():
     windows_pattern = r'(call\.method_name\(\) == "getServerUrlKey"[\s\S]*?const unsigned char enc\[\] = \{)([\s\S]*?)(\};)'
     if update_file(PATHS["windows"], windows_pattern, native_bytes_str):
         success_count += 1
+
+    # 3. 更新 iOS Native (AppDelegate.swift)
+    ios_pattern = r'(private func nativeServerUrlKey\(\) -> String\s*\{\s*return xorDecode\(\[)([\s\S]*?)(\]\)\s*\})'
+    if update_file(PATHS["ios"], ios_pattern, swift_bytes_str):
+        success_count += 1
         
-    # 3. 更新 Dart (不再生成 bytes, 而是清空或保留空数组，完全依赖 Native 返回)
+    # 4. 更新 Dart (不再生成 bytes, 而是清空或保留空数组，完全依赖 Native 返回)
     # dart_pattern = r'(static const List<int> _serverUrlBytes = )(\[[0-9, ]+\])(;)'
     # if update_file(PATHS["dart"], dart_pattern, "[]"):
     #    success_count += 1
         
-    print(f"\n🎉 [完成] 成功更新了 {success_count}/2 个文件！(Dart 层已改为完全动态获取，无需静态修改)")
-    print("💡 提示: 修改完成后，请直接运行打包命令 (flutter build apk / windows) 即可生效。")
+    print(f"\n🎉 [完成] 成功更新了 {success_count}/3 个文件！(Dart 层已改为完全动态获取，无需静态修改)")
+    print("💡 提示: 修改完成后，请直接运行打包命令 (flutter build apk / ios / windows) 即可生效。")
 
 if __name__ == "__main__":
     main()
