@@ -55,6 +55,7 @@ jobs:
             mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
             security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
             PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$RUNNER_TEMP/profile.plist")
+            PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$RUNNER_TEMP/profile.plist")
             cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
             TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$RUNNER_TEMP/profile.plist")
             GET_TASK_ALLOW=$(/usr/libexec/PlistBuddy -c "Print Entitlements:get-task-allow" "$RUNNER_TEMP/profile.plist")
@@ -63,14 +64,25 @@ jobs:
             if [ -n "$PROFILE_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
               BUNDLE_ID="$PROFILE_BUNDLE_ID"
             fi
-            EXPORT_METHOD="ad-hoc"
-            if [ "$GET_TASK_ALLOW" = "true" ]; then EXPORT_METHOD="development"; fi
+            HAS_PROVISIONED_DEVICES="false"
+            if /usr/libexec/PlistBuddy -c "Print ProvisionedDevices:0" "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
+              HAS_PROVISIONED_DEVICES="true"
+            fi
+            PROVISIONS_ALL_DEVICES=$(/usr/libexec/PlistBuddy -c "Print ProvisionsAllDevices" "$RUNNER_TEMP/profile.plist" 2>/dev/null || echo "false")
+            EXPORT_METHOD="app-store"
+            if [ "$GET_TASK_ALLOW" = "true" ]; then
+              EXPORT_METHOD="development"
+            elif [ "$PROVISIONS_ALL_DEVICES" = "true" ]; then
+              EXPORT_METHOD="enterprise"
+            elif [ "$HAS_PROVISIONED_DEVICES" = "true" ]; then
+              EXPORT_METHOD="release-testing"
+            fi
             EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
             /usr/libexec/PlistBuddy -c "Add :method string $EXPORT_METHOD" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
-            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_UUID" "$EXPORT_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" "$EXPORT_PLIST"
             flutter build ios --release --no-codesign
             pushd ios
             xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
