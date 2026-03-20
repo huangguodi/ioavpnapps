@@ -39,12 +39,13 @@ jobs:
             CERT_PATH=$RUNNER_TEMP/cert.p12
             PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
             KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+            IOS_P12_PASSWORD_CLEAN=$(printf %s "$IOS_P12_PASSWORD" | tr -d '\r\n')
             echo -n "$IOS_P12_BASE64" | base64 --decode -o "$CERT_PATH"
             echo -n "$IOS_MOBILEPROVISION_BASE64" | base64 --decode -o "$PROFILE_PATH"
             security create-keychain -p "" "$KEYCHAIN_PATH"
             security set-keychain-settings "$KEYCHAIN_PATH"
             security unlock-keychain -p "" "$KEYCHAIN_PATH"
-            security import "$CERT_PATH" -P "$IOS_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -P "$IOS_P12_PASSWORD_CLEAN" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
             security list-keychains -d user -s "$KEYCHAIN_PATH"
             mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
             security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
