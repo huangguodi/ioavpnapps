@@ -14,6 +14,7 @@ import Darwin
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
   private var coreRunning = false
+  private let defaultServerUrlKey = "https://vpnapis.com"
 
   override func application(
     _ application: UIApplication,
@@ -49,6 +50,12 @@ import Darwin
       (call: FlutterMethodCall, result: @escaping FlutterResult) -> Void in
       if call.method == "initAssets" {
           result(nil)
+      } else if call.method == "getAesKey" {
+          result(self.stringConfigValue(keys: ["APP_AES_KEY", "AES_KEY"], defaultValue: ""))
+      } else if call.method == "getObfuscateKey" {
+          result(self.stringConfigValue(keys: ["APP_OBFUSCATE_KEY", "OBFUSCATE_KEY"], defaultValue: ""))
+      } else if call.method == "getServerUrlKey" {
+          result(self.stringConfigValue(keys: ["APP_SERVER_URL", "SERVER_URL_KEY"], defaultValue: self.defaultServerUrlKey))
       } else if call.method == "startMihomo" || call.method == "start" {
           guard let args = call.arguments as? [String: Any],
                 let configPath = args["configPath"] as? String else {
@@ -137,5 +144,17 @@ import Darwin
     guard let proxies = root["proxies"] as? [String: Any] else { return nil }
     guard let group = proxies[groupName] as? [String: Any] else { return nil }
     return group["now"] as? String
+  }
+
+  private func stringConfigValue(keys: [String], defaultValue: String) -> String {
+    for key in keys {
+      if let value = Bundle.main.object(forInfoDictionaryKey: key) as? String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+          return trimmed
+        }
+      }
+    }
+    return defaultValue
   }
 }
