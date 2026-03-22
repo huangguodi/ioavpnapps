@@ -170,7 +170,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       } else if call.method == "isRunning" || call.method == "isMihomoRunning" {
           self.loadTunnelManager { manager, _ in
             let status = manager?.connection.status ?? .invalid
-            result(status == .connected || status == .connecting || status == .reasserting)
+            result(status == .connected || status == .reasserting)
           }
       } else if call.method == "changeMode" || call.method == "setModeNative" {
           let args = call.arguments as? [String: Any]
@@ -308,13 +308,36 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             return
           }
           do {
-            try (manager.connection as? NETunnelProviderSession)?.startVPNTunnel()
-            completion(nil)
+            guard let session = manager.connection as? NETunnelProviderSession else {
+              completion(NSError(domain: "Tunnel", code: -3, userInfo: [NSLocalizedDescriptionKey: "invalid tunnel session"]))
+              return
+            }
+            try session.startVPNTunnel()
+            self.waitTunnelConnected(manager: manager, retries: 8, completion: completion)
           } catch {
             completion(error)
           }
         }
       }
+    }
+  }
+
+  private func waitTunnelConnected(manager: NETunnelProviderManager, retries: Int, completion: @escaping (Error?) -> Void) {
+    let status = manager.connection.status
+    if status == .connected || status == .reasserting {
+      completion(nil)
+      return
+    }
+    if status == .disconnected || status == .invalid {
+      completion(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: "tunnel status: \(status.rawValue)"]))
+      return
+    }
+    if retries <= 0 {
+      completion(NSError(domain: "Tunnel", code: -5, userInfo: [NSLocalizedDescriptionKey: "tunnel status timeout: \(status.rawValue)"]))
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+      self?.waitTunnelConnected(manager: manager, retries: retries - 1, completion: completion)
     }
   }
 
