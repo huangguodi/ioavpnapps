@@ -4,6 +4,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:app/core/logger.dart';
 import 'package:app/services/api_service.dart';
 import 'package:app/services/mihomo_service.dart';
 import 'package:app/core/constants.dart';
@@ -429,8 +430,7 @@ class _SplashPageState extends State<SplashPage> {
       if (Platform.isIOS) {
         final permissionGranted = await MihomoService().requestVpnPermission();
         if (!permissionGranted) {
-          _lastStartupError = '服务启动失败：VPN 权限未授权，请在系统弹窗中点击允许。';
-          return false;
+          AppLogger.w('iOS requestVpnPermission returned false, continue to start tunnel for system auth trigger');
         }
       }
       // Initialize service (copy assets, MMDB, etc.)
