@@ -11,9 +11,9 @@ jobs:
     timeout-minutes: 60
     env:
       BUNDLE_ID: app.celery7240.capricorn2328
-      IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
-      IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
-      IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
+      IOS_P12_FILE: ios_cert/new.p12
+      IOS_MOBILEPROVISION_FILE: ios_cert/new.mobileprovision
+      IOS_P12_PASSWORD: "1"
 
     steps:
       - name: Checkout
@@ -33,74 +33,74 @@ jobs:
           cd ios
           pod install --repo-update
 
-      - name: Build IPA (signed if cert secrets exist)
+      - name: Build IPA (signed from repository cert files)
         run: |
-          if [ -n "$IOS_P12_BASE64" ] && [ -n "$IOS_P12_PASSWORD" ] && [ -n "$IOS_MOBILEPROVISION_BASE64" ]; then
-            CERT_PATH=$RUNNER_TEMP/cert.p12
-            PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
-            KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
-            IOS_P12_PASSWORD_CLEAN=$(printf %s "$IOS_P12_PASSWORD" | tr -d '\r\n')
-            echo -n "$IOS_P12_BASE64" | base64 --decode -o "$CERT_PATH"
-            echo -n "$IOS_MOBILEPROVISION_BASE64" | base64 --decode -o "$PROFILE_PATH"
-            security create-keychain -p "" "$KEYCHAIN_PATH"
-            security set-keychain-settings "$KEYCHAIN_PATH"
-            security unlock-keychain -p "" "$KEYCHAIN_PATH"
-            if ! security import "$CERT_PATH" -P "$IOS_P12_PASSWORD_CLEAN" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"; then
-              openssl pkcs12 -in "$CERT_PATH" -passin "pass:$IOS_P12_PASSWORD_CLEAN" -clcerts -nokeys -out "$RUNNER_TEMP/cert.pem"
-              openssl pkcs12 -in "$CERT_PATH" -passin "pass:$IOS_P12_PASSWORD_CLEAN" -nocerts -nodes -out "$RUNNER_TEMP/key.pem"
-              security import "$RUNNER_TEMP/cert.pem" -A -k "$KEYCHAIN_PATH"
-              security import "$RUNNER_TEMP/key.pem" -A -k "$KEYCHAIN_PATH"
-            fi
-            security list-keychains -d user -s "$KEYCHAIN_PATH"
-            mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-            security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
-            PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$RUNNER_TEMP/profile.plist")
-            PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$RUNNER_TEMP/profile.plist")
-            cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
-            TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$RUNNER_TEMP/profile.plist")
-            GET_TASK_ALLOW=$(/usr/libexec/PlistBuddy -c "Print Entitlements:get-task-allow" "$RUNNER_TEMP/profile.plist")
-            APP_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$RUNNER_TEMP/profile.plist")
-            PROFILE_BUNDLE_ID=${APP_IDENTIFIER#${TEAM_ID}.}
-            if [ -n "$PROFILE_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
-              BUNDLE_ID="$PROFILE_BUNDLE_ID"
-            fi
-            HAS_PROVISIONED_DEVICES="false"
-            if /usr/libexec/PlistBuddy -c "Print ProvisionedDevices:0" "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
-              HAS_PROVISIONED_DEVICES="true"
-            fi
-            PROVISIONS_ALL_DEVICES=$(/usr/libexec/PlistBuddy -c "Print ProvisionsAllDevices" "$RUNNER_TEMP/profile.plist" 2>/dev/null || echo "false")
-            EXPORT_METHOD="app-store"
-            if [ "$GET_TASK_ALLOW" = "true" ]; then
-              EXPORT_METHOD="development"
-            elif [ "$PROVISIONS_ALL_DEVICES" = "true" ]; then
-              EXPORT_METHOD="enterprise"
-            elif [ "$HAS_PROVISIONED_DEVICES" = "true" ]; then
-              EXPORT_METHOD="release-testing"
-            fi
-            EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
-            /usr/libexec/PlistBuddy -c "Add :method string $EXPORT_METHOD" "$EXPORT_PLIST"
-            /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_PLIST"
-            /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_PLIST"
-            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
-            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" "$EXPORT_PLIST"
-            pushd ios
-            xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
-              -archivePath "$PWD/build/Runner.xcarchive" archive \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
-            xcodebuild -exportArchive \
-              -archivePath "$PWD/build/Runner.xcarchive" \
-              -exportOptionsPlist "$EXPORT_PLIST" \
-              -exportPath "$PWD/../build/ios/ipa"
-            popd
-          else
-            flutter build ios --release --no-codesign
-            mkdir -p build/ios/ipa/Payload
-            cp -R build/ios/iphoneos/Runner.app build/ios/ipa/Payload/Runner.app
-            cd build/ios/ipa
-            /usr/bin/zip -r app-unsigned.ipa Payload
+          if [ ! -f "$IOS_P12_FILE" ]; then
+            echo "Missing certificate file: $IOS_P12_FILE"
+            exit 1
           fi
+          if [ ! -f "$IOS_MOBILEPROVISION_FILE" ]; then
+            echo "Missing provisioning file: $IOS_MOBILEPROVISION_FILE"
+            exit 1
+          fi
+          CERT_PATH=$RUNNER_TEMP/cert.p12
+          PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+          IOS_P12_PASSWORD_CLEAN=$(printf %s "$IOS_P12_PASSWORD" | tr -d '\r\n')
+          cp "$IOS_P12_FILE" "$CERT_PATH"
+          cp "$IOS_MOBILEPROVISION_FILE" "$PROFILE_PATH"
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          if ! security import "$CERT_PATH" -P "$IOS_P12_PASSWORD_CLEAN" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"; then
+            openssl pkcs12 -in "$CERT_PATH" -passin "pass:$IOS_P12_PASSWORD_CLEAN" -clcerts -nokeys -out "$RUNNER_TEMP/cert.pem"
+            openssl pkcs12 -in "$CERT_PATH" -passin "pass:$IOS_P12_PASSWORD_CLEAN" -nocerts -nodes -out "$RUNNER_TEMP/key.pem"
+            security import "$RUNNER_TEMP/cert.pem" -A -k "$KEYCHAIN_PATH"
+            security import "$RUNNER_TEMP/key.pem" -A -k "$KEYCHAIN_PATH"
+          fi
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$RUNNER_TEMP/profile.plist")
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$RUNNER_TEMP/profile.plist")
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+          TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$RUNNER_TEMP/profile.plist")
+          GET_TASK_ALLOW=$(/usr/libexec/PlistBuddy -c "Print Entitlements:get-task-allow" "$RUNNER_TEMP/profile.plist")
+          APP_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$RUNNER_TEMP/profile.plist")
+          PROFILE_BUNDLE_ID=${APP_IDENTIFIER#${TEAM_ID}.}
+          if [ -n "$PROFILE_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
+            BUNDLE_ID="$PROFILE_BUNDLE_ID"
+          fi
+          HAS_PROVISIONED_DEVICES="false"
+          if /usr/libexec/PlistBuddy -c "Print ProvisionedDevices:0" "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
+            HAS_PROVISIONED_DEVICES="true"
+          fi
+          PROVISIONS_ALL_DEVICES=$(/usr/libexec/PlistBuddy -c "Print ProvisionsAllDevices" "$RUNNER_TEMP/profile.plist" 2>/dev/null || echo "false")
+          EXPORT_METHOD="app-store"
+          if [ "$GET_TASK_ALLOW" = "true" ]; then
+            EXPORT_METHOD="development"
+          elif [ "$PROVISIONS_ALL_DEVICES" = "true" ]; then
+            EXPORT_METHOD="enterprise"
+          elif [ "$HAS_PROVISIONED_DEVICES" = "true" ]; then
+            EXPORT_METHOD="release-testing"
+          fi
+          EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
+          /usr/libexec/PlistBuddy -c "Add :method string $EXPORT_METHOD" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
+          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" "$EXPORT_PLIST"
+          pushd ios
+          xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
+            -archivePath "$PWD/build/Runner.xcarchive" archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
+          xcodebuild -exportArchive \
+            -archivePath "$PWD/build/Runner.xcarchive" \
+            -exportOptionsPlist "$EXPORT_PLIST" \
+            -exportPath "$PWD/../build/ios/ipa"
+          popd
 
       - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
