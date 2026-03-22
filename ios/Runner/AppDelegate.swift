@@ -50,12 +50,46 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   private let tunnelDescription = "CarbonLAM Tunnel"
   private let appGroupIdentifier = "group.25632c4e368be58f.1"
   private var trafficStreamHandler: TunnelTrafficStreamHandler?
+  private var channelsConfigured = false
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    let controller : FlutterViewController = window?.rootViewController as! FlutterViewController
+    configureChannelsIfNeeded()
+    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
+    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+  }
+
+  private func resolveFlutterViewController() -> FlutterViewController? {
+    if let controller = window?.rootViewController as? FlutterViewController {
+      return controller
+    }
+    for scene in UIApplication.shared.connectedScenes {
+      guard let windowScene = scene as? UIWindowScene else { continue }
+      for sceneWindow in windowScene.windows {
+        if let controller = sceneWindow.rootViewController as? FlutterViewController {
+          return controller
+        }
+      }
+    }
+    return nil
+  }
+
+  private func configureChannelsIfNeeded() {
+    if channelsConfigured {
+      return
+    }
+    guard let controller = resolveFlutterViewController() else {
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+        self?.configureChannelsIfNeeded()
+      }
+      return
+    }
+    channelsConfigured = true
     let channel = FlutterMethodChannel(name: "com.accelerator.tg/mihomo",
                                               binaryMessenger: controller.binaryMessenger)
     let trafficChannel = FlutterEventChannel(name: "com.accelerator.tg/mihomo/traffic",
@@ -190,12 +224,6 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           result(FlutterMethodNotImplemented)
       }
     })
-
-    return super.application(application, didFinishLaunchingWithOptions: launchOptions)
-  }
-
-  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
-    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
   }
 
   private func isDebuggerAttached() -> Bool {
