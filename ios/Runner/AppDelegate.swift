@@ -343,37 +343,10 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           return
         }
         manager.loadFromPreferences { loadError in
-          if let loadError = loadError {
-            completion(loadError)
-            return
-          }
-          guard let session = manager.connection as? NETunnelProviderSession else {
-            completion(NSError(domain: "Tunnel", code: -2))
-            return
-          }
-          do {
-            try session.startVPNTunnel(options: ["permission_probe": "1" as NSString])
-            session.stopVPNTunnel()
-            completion(nil)
-          } catch {
-            if self.isPermissionDenied(error) {
-              completion(error)
-            } else {
-              completion(nil)
-            }
-          }
+          completion(loadError)
         }
       }
     }
-  }
-
-  private func isPermissionDenied(_ error: Error) -> Bool {
-    let nsError = error as NSError
-    let message = nsError.localizedDescription.lowercased()
-    if message.contains("permission denied") || message.contains("not authorized") {
-      return true
-    }
-    return false
   }
 
   private func stopTunnel(completion: @escaping () -> Void) {
