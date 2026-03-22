@@ -159,7 +159,13 @@ class HomeViewModel extends ChangeNotifier {
          final userInfo = ApiService().userInfo;
          final url = userInfo?['subscribe_url'];
          if (url != null) {
-            await MihomoService().start(subscribeUrl: url);
+            final startError = await MihomoService().start(subscribeUrl: url.toString());
+            if (startError != null) {
+              _connectionMode = previousMode;
+              _isSwitching = false;
+              notifyListeners();
+              return false;
+            }
          } else {
             _connectionMode = previousMode;
             _isSwitching = false;

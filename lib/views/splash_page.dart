@@ -439,7 +439,11 @@ class _SplashPageState extends State<SplashPage> {
       if (userInfo != null) {
         final subscribeUrl = userInfo['subscribe_url'];
         if (subscribeUrl != null && subscribeUrl.toString().isNotEmpty) {
-           await MihomoService().start(subscribeUrl: subscribeUrl.toString());
+           final startError = await MihomoService().start(subscribeUrl: subscribeUrl.toString());
+           if (startError != null) {
+             _lastStartupError = '服务启动失败：$startError';
+             return false;
+           }
            return true;
         } else {
            _lastStartupError = '启动失败：缺少订阅地址';

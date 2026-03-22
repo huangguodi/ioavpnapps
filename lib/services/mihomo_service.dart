@@ -140,16 +140,27 @@ class MihomoService {
 
   Future<String?> start({required String subscribeUrl}) async {
     try {
-      AppLogger.d("MihomoService: Starting with URL: $subscribeUrl");
-      _lastSubscribeUrl = subscribeUrl;
+      final normalizedUrl = _normalizeSubscribeUrl(subscribeUrl);
+      if (normalizedUrl == null) {
+        return "Invalid subscribe url";
+      }
+      AppLogger.d("MihomoService: Starting with URL: $normalizedUrl");
+      _lastSubscribeUrl = normalizedUrl;
       
       // Download config using ApiService.sharedClient to ensure consistent SSL policy
-      final response = await ApiService.sharedClient.get(Uri.parse(subscribeUrl)).timeout(const Duration(seconds: 10));
+      final response = await ApiService.sharedClient.get(Uri.parse(normalizedUrl)).timeout(const Duration(seconds: 10));
       if (response.statusCode != 200) {
         return "Config download failed: ${response.statusCode}";
       }
       
       var configContent = utf8.decode(response.bodyBytes);
+      final trimmed = configContent.trimLeft();
+      if (trimmed.startsWith('{') || trimmed.startsWith('<')) {
+        return "Config payload is invalid";
+      }
+      if (!configContent.contains('proxies:') && !configContent.contains('proxy-groups:')) {
+        return "Config format invalid";
+      }
 
       final configPath = await _saveConfig(configContent);
       
@@ -158,6 +169,18 @@ class MihomoService {
       AppLogger.e("MihomoService: Start error: $e");
       return e.toString();
     }
+  }
+
+  String? _normalizeSubscribeUrl(String raw) {
+    var url = raw.trim().replaceAll('`', '');
+    while (url.endsWith(',') || url.endsWith('，') || url.endsWith(';')) {
+      url = url.substring(0, url.length - 1).trimRight();
+    }
+    if (url.isEmpty) return null;
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme || uri.host.isEmpty) return null;
+    if (uri.scheme != 'http' && uri.scheme != 'https') return null;
+    return uri.toString();
   }
 
   Future<String?> _startNative(String configPath, String configContent) async {

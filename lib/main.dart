@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
-import 'services/api_service.dart';
 import 'services/tray_service.dart';
 import 'views/splash_page.dart';
 import 'views/widgets/debug_overlay_button.dart';
@@ -60,64 +59,57 @@ Future<void> _enforceSecurity() async {
 }
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-  FlutterError.onError = (details) {
-    FlutterError.presentError(details);
-    AppLogger.e(details.exceptionAsString(), details.exception, details.stack);
-  };
-  PlatformDispatcher.instance.onError = (error, stack) {
-    AppLogger.e(error.toString(), error, stack);
-    return true;
-  };
-  
-  // Initialize native keys early to prevent api call failures
-  await ApiService().initNativeKeys();
-  
-  await _enforceSecurity();
-  
-  // Windows 平台适配
-  if (!kIsWeb && Platform.isWindows) {
-    await windowManager.ensureInitialized();
-
-    WindowOptions windowOptions = const WindowOptions(
-      size: Size(300, 520), // 调整为更小的 9:16 比例
-      minimumSize: Size(300, 520),
-      maximumSize: Size(300, 520), // 禁止最大化，固定尺寸
-      center: true,
-      backgroundColor: Colors.transparent,
-      skipTaskbar: false,
-      titleBarStyle: TitleBarStyle.normal, // 使用系统标题栏，带圆角（Win11默认）
-      title: '加速器', // 窗口标题
-    );
-    
-    await windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.setResizable(false); // 禁止调整大小
-      await windowManager.setMaximizable(false); // 禁止最大化
-      await windowManager.setPreventClose(true); // 拦截关闭事件，改为隐藏窗口
-      await windowManager.show();
-      await windowManager.focus();
-    });
-
-    // 初始化系统托盘
-    await TrayService().init();
-  }
-  
-  // 设置全屏和透明导航栏，与原生启动页保持一致
-  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-    statusBarColor: Colors.transparent,
-    systemNavigationBarColor: Colors.transparent,
-    systemNavigationBarDividerColor: Colors.transparent, // 兼容 Android P+
-    statusBarIconBrightness: Brightness.light,
-    systemNavigationBarIconBrightness: Brightness.light, // 确保导航栏图标可见
-  ));
-  
-  runZonedGuarded(
-    () => runApp(const MyApp()),
-    (error, stack) {
+  await runZonedGuarded(() async {
+    WidgetsFlutterBinding.ensureInitialized();
+    FlutterError.onError = (details) {
+      FlutterError.presentError(details);
+      AppLogger.e(details.exceptionAsString(), details.exception, details.stack);
+    };
+    PlatformDispatcher.instance.onError = (error, stack) {
       AppLogger.e(error.toString(), error, stack);
-    },
-  );
+      return true;
+    };
+    
+    await _enforceSecurity();
+    
+    if (!kIsWeb && Platform.isWindows) {
+      await windowManager.ensureInitialized();
+
+      WindowOptions windowOptions = const WindowOptions(
+        size: Size(300, 520),
+        minimumSize: Size(300, 520),
+        maximumSize: Size(300, 520),
+        center: true,
+        backgroundColor: Colors.transparent,
+        skipTaskbar: false,
+        titleBarStyle: TitleBarStyle.normal,
+        title: '加速器',
+      );
+      
+      await windowManager.waitUntilReadyToShow(windowOptions, () async {
+        await windowManager.setResizable(false);
+        await windowManager.setMaximizable(false);
+        await windowManager.setPreventClose(true);
+        await windowManager.show();
+        await windowManager.focus();
+      });
+
+      await TrayService().init();
+    }
+    
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.light,
+      systemNavigationBarIconBrightness: Brightness.light,
+    ));
+    
+    runApp(const MyApp());
+  }, (error, stack) {
+    AppLogger.e(error.toString(), error, stack);
+  });
 }
 
 class MyApp extends StatefulWidget {
