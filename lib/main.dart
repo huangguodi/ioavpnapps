@@ -23,7 +23,7 @@ class _DirectOnlyHttpOverrides extends HttpOverrides {
 }
 
 Future<void> _enforceSecurity() async {
-  if (!kIsWeb && !kDebugMode) {
+  if (!kIsWeb && !kDebugMode && !Platform.isIOS) {
     HttpOverrides.global = _DirectOnlyHttpOverrides();
   }
   final isSupportedPlatform = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isWindows);
