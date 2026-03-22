@@ -5,6 +5,7 @@ import 'dart:math';
 
 import 'package:android_id/android_id.dart';
 import 'package:app/core/logger.dart';
+import 'package:app/services/diagnostic_log_service.dart';
 import 'package:app/core/certificates.dart';
 import 'package:crypto/crypto.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -621,7 +622,8 @@ class ApiService {
   }
 
   void _log(String msg) {
-    if (kReleaseMode) return; // Release 模式下彻底禁用日志记录
+    DiagnosticLogService.add('API', msg);
+    if (kReleaseMode) return;
     AppLogger.d(msg);
     _lastDebugInfo += "$msg\n";
   }

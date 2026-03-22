@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
+import 'package:app/services/diagnostic_log_service.dart';
 
 class AppLogger {
   static final Logger _logger = Logger(
@@ -16,19 +17,27 @@ class AppLogger {
   );
 
   static void d(dynamic message, [dynamic error, StackTrace? stackTrace]) {
-    _logger.d(_format(message), error: error, stackTrace: stackTrace);
+    final text = _format(message);
+    DiagnosticLogService.add('DEBUG', text);
+    _logger.d(text, error: error, stackTrace: stackTrace);
   }
 
   static void i(dynamic message, [dynamic error, StackTrace? stackTrace]) {
-    _logger.i(_format(message), error: error, stackTrace: stackTrace);
+    final text = _format(message);
+    DiagnosticLogService.add('INFO', text);
+    _logger.i(text, error: error, stackTrace: stackTrace);
   }
 
   static void w(dynamic message, [dynamic error, StackTrace? stackTrace]) {
-    _logger.w(_format(message), error: error, stackTrace: stackTrace);
+    final text = _format(message);
+    DiagnosticLogService.add('WARN', text);
+    _logger.w(text, error: error, stackTrace: stackTrace);
   }
 
   static void e(dynamic message, [dynamic error, StackTrace? stackTrace]) {
-    _logger.e(_format(message), error: error, stackTrace: stackTrace);
+    final text = _format(message);
+    DiagnosticLogService.add('ERROR', text);
+    _logger.e(text, error: error, stackTrace: stackTrace);
   }
 
   // 统一的日志格式化和脱敏处理
