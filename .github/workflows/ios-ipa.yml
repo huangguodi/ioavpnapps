@@ -71,7 +71,6 @@ jobs:
           if [ -n "$PROFILE_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
             BUNDLE_ID="$PROFILE_BUNDLE_ID"
           fi
-          EXTENSION_BUNDLE_ID="${BUNDLE_ID}.PacketTunnel"
           HAS_PROVISIONED_DEVICES="false"
           if /usr/libexec/PlistBuddy -c "Print ProvisionedDevices:0" "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
             HAS_PROVISIONED_DEVICES="true"
@@ -91,13 +90,11 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_PLIST"
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" "$EXPORT_PLIST"
-          /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$EXTENSION_BUNDLE_ID string $PROFILE_NAME" "$EXPORT_PLIST"
           pushd ios
           xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
             -archivePath "$PWD/build/Runner.xcarchive" archive \
-            CODE_SIGN_STYLE=Manual \
-            DEVELOPMENT_TEAM="$TEAM_ID" \
-            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
             OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
           xcodebuild -exportArchive \
             -archivePath "$PWD/build/Runner.xcarchive" \
