@@ -82,7 +82,7 @@ jobs:
           elif [ "$PROVISIONS_ALL_DEVICES" = "true" ]; then
             EXPORT_METHOD="enterprise"
           elif [ "$HAS_PROVISIONED_DEVICES" = "true" ]; then
-            EXPORT_METHOD="release-testing"
+            EXPORT_METHOD="ad-hoc"
           fi
           EXPORT_PLIST="$RUNNER_TEMP/ExportOptions.plist"
           /usr/libexec/PlistBuddy -c "Add :method string $EXPORT_METHOD" "$EXPORT_PLIST"
@@ -92,6 +92,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" "$EXPORT_PLIST"
           pushd ios
           xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
+            -destination "generic/platform=iOS" \
             -archivePath "$PWD/build/Runner.xcarchive" archive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
