@@ -426,6 +426,13 @@ class _SplashPageState extends State<SplashPage> {
   Future<bool> _startMihomo() async {
     _lastStartupError = null;
     try {
+      if (Platform.isIOS) {
+        final permissionGranted = await MihomoService().requestVpnPermission();
+        if (!permissionGranted) {
+          _lastStartupError = '服务启动失败：VPN 权限未授权，请在系统弹窗中点击允许。';
+          return false;
+        }
+      }
       // Initialize service (copy assets, MMDB, etc.)
       await MihomoService().init();
       
@@ -441,10 +448,27 @@ class _SplashPageState extends State<SplashPage> {
         if (subscribeUrl != null && subscribeUrl.toString().isNotEmpty) {
            final startError = await MihomoService().start(subscribeUrl: subscribeUrl.toString());
            if (startError != null) {
-             _lastStartupError = '服务启动失败：$startError';
+             final lower = startError.toLowerCase();
+             if (lower.contains('permission denied') || lower.contains('vpn_permission_denied')) {
+               _lastStartupError = '服务启动失败：VPN 权限未授权，请在系统弹窗中点击允许。';
+             } else {
+               _lastStartupError = '服务启动失败：$startError';
+             }
              return false;
            }
-           return true;
+           for (int i = 0; i < 10; i++) {
+             final running = await MihomoService().checkIsRunning();
+             if (running) {
+               return true;
+             }
+             await Future.delayed(const Duration(milliseconds: 500));
+           }
+           if (Platform.isIOS) {
+             _lastStartupError = '服务启动失败：VPN 未成功连接，请确认已允许 VPN 权限。';
+           } else {
+             _lastStartupError = '服务启动失败：内核未运行';
+           }
+           return false;
         } else {
            _lastStartupError = '启动失败：缺少订阅地址';
            return false;

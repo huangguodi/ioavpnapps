@@ -171,6 +171,20 @@ class MihomoService {
     }
   }
 
+  Future<bool> requestVpnPermission() async {
+    if (!Platform.isIOS) return true;
+    try {
+      final result = await _channel.invokeMethod('requestVpnPermission');
+      return result == true;
+    } on PlatformException catch (e) {
+      AppLogger.e("MihomoService: requestVpnPermission error: ${e.message}");
+      return false;
+    } catch (e) {
+      AppLogger.e("MihomoService: requestVpnPermission exception: $e");
+      return false;
+    }
+  }
+
   String? _normalizeSubscribeUrl(String raw) {
     var url = raw.trim().replaceAll('`', '');
     while (url.endsWith(',') || url.endsWith('，') || url.endsWith(';')) {

@@ -135,6 +135,14 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       (call: FlutterMethodCall, result: @escaping FlutterResult) -> Void in
       if call.method == "initAssets" {
           result(nil)
+      } else if call.method == "requestVpnPermission" {
+          self.requestTunnelPermission { error in
+            if let error = error {
+              result(FlutterError(code: "VPN_PERMISSION_DENIED", message: error.localizedDescription, details: nil))
+            } else {
+              result(true)
+            }
+          }
       } else if call.method == "getAesKey" {
           result(self.nativeAesKey())
       } else if call.method == "getObfuscateKey" {
@@ -297,6 +305,37 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           } catch {
             completion(error)
           }
+        }
+      }
+    }
+  }
+
+  private func requestTunnelPermission(completion: @escaping (Error?) -> Void) {
+    loadTunnelManager { manager, error in
+      if let error = error {
+        completion(error)
+        return
+      }
+      guard let manager = manager else {
+        completion(NSError(domain: "Tunnel", code: -1))
+        return
+      }
+      let proto = NETunnelProviderProtocol()
+      proto.providerBundleIdentifier = self.tunnelBundleIdentifier
+      proto.serverAddress = "CarbonLAM"
+      proto.providerConfiguration = [
+        "appGroup": self.appGroupIdentifier
+      ]
+      manager.localizedDescription = self.tunnelDescription
+      manager.protocolConfiguration = proto
+      manager.isEnabled = true
+      manager.saveToPreferences { saveError in
+        if let saveError = saveError {
+          completion(saveError)
+          return
+        }
+        manager.loadFromPreferences { loadError in
+          completion(loadError)
         }
       }
     }
