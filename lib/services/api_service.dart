@@ -366,10 +366,7 @@ class ApiService {
 
   String get _baseUrl {
     if (_dynamicServerUrlKey.isEmpty) {
-      // 严重错误：Native 密钥未加载，直接退出以防止崩溃或异常行为
-      if (Platform.isAndroid || Platform.isIOS) {
-        exit(0);
-      }
+      return utf8.decode(_serverUrlBytes);
     }
     
     // 如果 Native 返回的已经是完整的 URL，则直接使用
@@ -383,7 +380,7 @@ class ApiService {
     final keyBytes = utf8.encode(_dynamicServerUrlKey);
     // Double check to prevent division by zero
     if (keyBytes.isEmpty) {
-       exit(0);
+       return utf8.decode(_serverUrlBytes);
     }
     
     // 如果 _serverUrlBytes 为空，说明 Dart 层没有存储任何 URL 信息，完全依赖 Native

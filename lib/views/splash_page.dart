@@ -68,6 +68,16 @@ class _SplashPageState extends State<SplashPage> {
     String? errorMsg;
     try {
       errorMsg = await ApiService().login();
+      if (errorMsg != null &&
+          errorMsg.contains('Failed host lookup')) {
+        await Future.delayed(const Duration(milliseconds: 600));
+        await ApiService().initNativeKeys();
+        errorMsg = await ApiService().login();
+        if (errorMsg != null && errorMsg.contains('Failed host lookup')) {
+          await Future.delayed(const Duration(seconds: 1));
+          errorMsg = await ApiService().login();
+        }
+      }
     } catch (e) {
       errorMsg = "Exception: $e";
     }
