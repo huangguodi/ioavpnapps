@@ -1,10 +1,5 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:app/services/api_service.dart';
-import 'package:app/services/diagnostic_log_service.dart';
-import 'package:app/services/mihomo_service.dart';
 import 'package:app/core/constants.dart';
 import 'package:app/core/utils.dart';
 import 'package:app/view_models/home_view_model.dart';
@@ -120,10 +115,7 @@ class _HomePageContentState extends State<_HomePageContent> with WidgetsBindingO
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          IconButton(
-                            icon: const Icon(Icons.bug_report_rounded, color: Colors.white70, size: 22),
-                            onPressed: () => _showDiagnosticsDialog(vm),
-                          ),
+                          const SizedBox(width: 24, height: 24),
                           Padding(
                             padding: const EdgeInsets.only(top: 15.0),
                             child: Hero(
@@ -153,7 +145,7 @@ class _HomePageContentState extends State<_HomePageContent> with WidgetsBindingO
                               ),
                             ),
                           ),
-                          const SizedBox(width: 40, height: 40),
+                          const SizedBox(width: 24, height: 24),
                         ],
                       ),
                     ),
@@ -233,91 +225,5 @@ class _HomePageContentState extends State<_HomePageContent> with WidgetsBindingO
         _showNextExpiredTrafficDialog(vm);
       });
     }
-  }
-
-  Future<void> _showDiagnosticsDialog(HomeViewModel vm) async {
-    final report = await _buildDiagnosticReport(vm);
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        return AlertDialog(
-          title: const Text('诊断日志'),
-          content: SizedBox(
-            width: 520,
-            child: SingleChildScrollView(
-              child: SelectableText(
-                report,
-                style: const TextStyle(fontSize: 12, height: 1.35),
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('关闭'),
-            ),
-            TextButton(
-              onPressed: () async {
-                Navigator.of(dialogContext).pop();
-                await Clipboard.setData(ClipboardData(text: report));
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('诊断日志已复制，可直接发给我分析')),
-                );
-              },
-              child: const Text('复制日志'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Future<String> _buildDiagnosticReport(HomeViewModel vm) async {
-    final api = ApiService();
-    final userInfo = api.userInfo ?? const <String, dynamic>{};
-    String nativeMode = 'unknown';
-    bool isRunning = false;
-    String selectedGlobal = '--';
-    int proxyCount = 0;
-    String probeError = '';
-    try {
-      isRunning = await MihomoService().checkIsRunning();
-      nativeMode = await MihomoService().getMode();
-      selectedGlobal = await MihomoService().getSelectedProxy('GLOBAL') ?? '--';
-      final proxies = await MihomoService().getProxies(forceRefresh: true);
-      final proxyMap = proxies['proxies'];
-      if (proxyMap is Map) {
-        proxyCount = proxyMap.length;
-      }
-    } catch (e) {
-      probeError = e.toString();
-    }
-    final snapshot = <String, dynamic>{
-      'time': DateTime.now().toIso8601String(),
-      'uiMode': vm.connectionMode.name,
-      'isSwitching': vm.isSwitching,
-      'nativeRunning': isRunning,
-      'nativeMode': nativeMode,
-      'selectedGlobal': selectedGlobal,
-      'proxyCount': proxyCount,
-      'globalNode': {
-        'name': vm.globalNodeName,
-        'type': vm.globalNodeType,
-        'country': vm.globalNodeCountry,
-        'udp': vm.globalNodeUdp,
-      },
-      'user': {
-        'id': userInfo['id'],
-        'dpid': userInfo['dpid'],
-        'quota': userInfo['quota'],
-        'expire_time': userInfo['expire_time'],
-        'has_subscribe_url': (userInfo['subscribe_url']?.toString().isNotEmpty ?? false),
-      },
-      'probeError': probeError,
-      'apiDebug': ApiService.lastDebugInfo,
-    };
-    return '${const JsonEncoder.withIndent('  ').convert(snapshot)}\n\n---- logs ----\n${DiagnosticLogService.dump()}';
   }
 }

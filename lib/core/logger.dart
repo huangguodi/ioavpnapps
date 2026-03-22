@@ -1,8 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:logger/logger.dart';
-import 'package:app/services/diagnostic_log_service.dart';
+import 'package:app/core/constants.dart';
 
 class AppLogger {
+  static const int _maxLogs = 500;
+  static final List<String> _logs = <String>[];
   static final Logger _logger = Logger(
     printer: PrettyPrinter(
       methodCount: 0,
@@ -13,31 +15,48 @@ class AppLogger {
       dateTimeFormat: DateTimeFormat.none,
     ),
     // 仅在 Debug 模式下输出日志，Release 模式下彻底关闭
-    level: kReleaseMode ? Level.off : Level.debug,
+    level: (kReleaseMode && !AppConfig.enableDebugOverlay) ? Level.off : Level.debug,
   );
 
   static void d(dynamic message, [dynamic error, StackTrace? stackTrace]) {
     final text = _format(message);
-    DiagnosticLogService.add('DEBUG', text);
+    _append('D', text);
     _logger.d(text, error: error, stackTrace: stackTrace);
   }
 
   static void i(dynamic message, [dynamic error, StackTrace? stackTrace]) {
     final text = _format(message);
-    DiagnosticLogService.add('INFO', text);
+    _append('I', text);
     _logger.i(text, error: error, stackTrace: stackTrace);
   }
 
   static void w(dynamic message, [dynamic error, StackTrace? stackTrace]) {
     final text = _format(message);
-    DiagnosticLogService.add('WARN', text);
+    _append('W', text);
     _logger.w(text, error: error, stackTrace: stackTrace);
   }
 
   static void e(dynamic message, [dynamic error, StackTrace? stackTrace]) {
     final text = _format(message);
-    DiagnosticLogService.add('ERROR', text);
+    _append('E', text);
     _logger.e(text, error: error, stackTrace: stackTrace);
+  }
+
+  static String dumpLogs() => _logs.join('\n');
+
+  static void clearLogs() {
+    _logs.clear();
+  }
+
+  static void _append(String level, String message) {
+    final now = DateTime.now();
+    final h = now.hour.toString().padLeft(2, '0');
+    final m = now.minute.toString().padLeft(2, '0');
+    final s = now.second.toString().padLeft(2, '0');
+    _logs.add('[$h:$m:$s][$level] $message');
+    if (_logs.length > _maxLogs) {
+      _logs.removeRange(0, _logs.length - _maxLogs);
+    }
   }
 
   // 统一的日志格式化和脱敏处理

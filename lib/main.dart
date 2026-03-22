@@ -1,13 +1,15 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:app/core/constants.dart';
+import 'package:app/core/logger.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'services/api_service.dart';
-import 'services/global_error_reporter.dart';
 import 'services/tray_service.dart';
 import 'views/splash_page.dart';
+import 'views/widgets/debug_overlay_button.dart';
 
 const MethodChannel _securityChannel = MethodChannel('com.accelerator.tg/security');
 Timer? _securityWatchdog;
@@ -59,21 +61,12 @@ Future<void> _enforceSecurity() async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  GlobalAppErrorReporter.initialize(_appNavigatorKey);
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
-    GlobalAppErrorReporter.showError(
-      title: '应用错误',
-      message: details.exceptionAsString(),
-      detail: details.stack?.toString(),
-    );
+    AppLogger.e(details.exceptionAsString(), details.exception, details.stack);
   };
   PlatformDispatcher.instance.onError = (error, stack) {
-    GlobalAppErrorReporter.showError(
-      title: '应用错误',
-      message: error.toString(),
-      detail: stack.toString(),
-    );
+    AppLogger.e(error.toString(), error, stack);
     return true;
   };
   
@@ -122,11 +115,7 @@ Future<void> main() async {
   runZonedGuarded(
     () => runApp(const MyApp()),
     (error, stack) {
-      GlobalAppErrorReporter.showError(
-        title: '应用错误',
-        message: error.toString(),
-        detail: stack.toString(),
-      );
+      AppLogger.e(error.toString(), error, stack);
     },
   );
 }
@@ -182,6 +171,17 @@ class _MyAppState extends State<MyApp> with WindowListener {
         scaffoldBackgroundColor: const Color(0xFF101F2D),
       ),
       home: const SplashPage(),
+      builder: (context, child) {
+        if (!AppConfig.enableDebugOverlay) {
+          return child ?? const SizedBox.shrink();
+        }
+        return Stack(
+          children: [
+            child ?? const SizedBox.shrink(),
+            DebugOverlayButton(navigatorKey: _appNavigatorKey),
+          ],
+        );
+      },
       debugShowCheckedModeBanner: false,
     );
   }

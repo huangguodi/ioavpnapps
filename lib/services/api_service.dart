@@ -4,8 +4,8 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:android_id/android_id.dart';
+import 'package:app/core/constants.dart';
 import 'package:app/core/logger.dart';
-import 'package:app/services/diagnostic_log_service.dart';
 import 'package:app/core/certificates.dart';
 import 'package:crypto/crypto.dart';
 import 'package:device_info_plus/device_info_plus.dart';
@@ -312,13 +312,7 @@ class ApiService {
   // ===========================================================================
   // 1. 服务端地址配置 (XOR 混淆存储)
   // ===========================================================================
-  // Dart 侧不再存储任何服务端的真实地址片段。
-  // 所有的密钥和地址信息均由 Native 层 (JNI/C++) 动态注入。
-  // 此处保留的 _serverUrlBytes 仅为 Native 密钥解密的占位符或二次混淆参数。
-  static List<int> _serverUrlBytes = []; 
-  
-  // HONEYPOT: Fake URL and Keys with complex obfuscation lookalikes
-  static const List<int> _serverUlrBytes = [104, 116, 116, 112, 115, 58, 47, 47, 97, 112, 105, 46, 116, 103, 115, 95, 118, 112, 110, 46, 99, 111, 109];
+  // 所有服务端地址均只从 Native 层注入，Flutter 层禁止内置或回退。
   
   static String get _aesKye {
     final parts = ['A1B2', 'C3D4', 'E5F6', '7890', '1234', '5678', '90AB', 'CDEF'];
@@ -367,39 +361,13 @@ class ApiService {
 
   String get _baseUrl {
     if (_dynamicServerUrlKey.isEmpty) {
-      return utf8.decode(_serverUrlBytes);
+      throw StateError('Native server url is empty');
     }
     
-    // 如果 Native 返回的已经是完整的 URL，则直接使用
-    // 注意：请确保 Native 层返回的 _dynamicServerUrlKey 是解密后的真实 URL
     if (_dynamicServerUrlKey.startsWith("http")) {
        return _dynamicServerUrlKey;
     }
-
-    // 兼容旧逻辑：如果 Native 返回的是用于异或的密钥 (这种情况应该已被废弃)
-    // 但为了防止代码出错，保留这段逻辑作为 Fallback
-    final keyBytes = utf8.encode(_dynamicServerUrlKey);
-    // Double check to prevent division by zero
-    if (keyBytes.isEmpty) {
-       return utf8.decode(_serverUrlBytes);
-    }
-    
-    // 如果 _serverUrlBytes 为空，说明 Dart 层没有存储任何 URL 信息，完全依赖 Native
-    // 此时如果 Native 返回的不是 URL，我们无能为力
-    if (_serverUrlBytes.isEmpty) {
-       return _dynamicServerUrlKey;
-    }
-
-    final urlBytes = List<int>.from(_serverUrlBytes);
-    for (int i = 0; i < urlBytes.length; i++) {
-      urlBytes[i] = urlBytes[i] ^ keyBytes[i % keyBytes.length];
-    }
-    String url = utf8.decode(urlBytes);
-    
-    if (kReleaseMode && url.startsWith('http://')) {
-      url = url.replaceFirst('http://', 'https://');
-    }
-    return url;
+    throw StateError('Native server url is invalid');
   }
 
   // ===========================================================================
@@ -477,18 +445,7 @@ class ApiService {
 
   // ignore: unused_element
   Future<void> _checkAppIntegrity() async {
-    try {
-      final fakeUrl = Uri.parse(utf8.decode(_serverUlrBytes) + "/v1/verify");
-      final response = await _client.post(
-        fakeUrl,
-        headers: {"X-Integrity-Token": _aesKye},
-        body: json.encode({"check": "root"}),
-      ).timeout(const Duration(seconds: 3));
-      
-      if (response.statusCode == 200) {
-        _isRooted = response.body.contains("true");
-      }
-    } catch (_) {}
+    _isRooted = false;
   }
 
   // ignore: unused_element
@@ -622,8 +579,7 @@ class ApiService {
   }
 
   void _log(String msg) {
-    DiagnosticLogService.add('API', msg);
-    if (kReleaseMode) return;
+    if (kReleaseMode && !AppConfig.enableDebugOverlay) return;
     AppLogger.d(msg);
     _lastDebugInfo += "$msg\n";
   }

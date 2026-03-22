@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:app/services/api_service.dart';
-import 'package:app/services/global_error_reporter.dart';
 import 'package:app/services/mihomo_service.dart';
 import 'package:app/core/constants.dart';
 import 'package:app/views/widgets/custom_dialog.dart';
@@ -96,17 +95,31 @@ class _SplashPageState extends State<SplashPage> {
         await _prepareHomeResources();
         _navigateToHome(initialMode);
       } else {
-        await GlobalAppErrorReporter.showError(
-          title: '启动失败',
-          message: _lastStartupError ?? '服务启动失败，请检查网络后重试。',
-        );
+        await _showStartupError(_lastStartupError ?? '服务启动失败，请检查网络后重试。');
       }
     } else {
-      await GlobalAppErrorReporter.showError(
-        title: '启动失败',
-        message: errorMsg,
-      );
+      await _showStartupError(errorMsg);
     }
+  }
+
+  Future<void> _showStartupError(String message) async {
+    if (!mounted) return;
+    await showAnimatedDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('启动失败'),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _showPermissionDeniedDialog(String title, String message) async {

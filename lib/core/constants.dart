@@ -57,3 +57,7 @@ class AppAssets {
   static const String icChevronRight = 'assets/images/chevron-right.svg';
   static const String icClose = 'assets/images/close.svg';
 }
+
+class AppConfig {
+  static const bool enableDebugOverlay = true;
+}
