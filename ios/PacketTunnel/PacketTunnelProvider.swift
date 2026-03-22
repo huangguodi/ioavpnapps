@@ -74,7 +74,7 @@ final class PacketFlowBridgeAdapter: NSObject {
 }
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
-  private let defaultAppGroup = "group.xyz.appinstall.nov.carbon.lam"
+  private let defaultAppGroup = "group.25632c4e368be58f.1"
   private var bridge: PacketFlowBridgeAdapter?
   private var pathMonitor: NWPathMonitor?
   private var homeURL: URL?

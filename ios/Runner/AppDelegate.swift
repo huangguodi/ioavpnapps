@@ -46,9 +46,9 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
-  private let tunnelBundleIdentifier = "xyz.appinstall.nov.carbon.lam.PacketTunnel"
+  private let tunnelBundleIdentifier = "app.celery7240.capricorn2328.PacketTunnel"
   private let tunnelDescription = "CarbonLAM Tunnel"
-  private let appGroupIdentifier = "group.xyz.appinstall.nov.carbon.lam"
+  private let appGroupIdentifier = "group.25632c4e368be58f.1"
   private var trafficStreamHandler: TunnelTrafficStreamHandler?
 
   override func application(
@@ -334,8 +334,8 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 
   private func nativeServerUrlKey() -> String {
     return xorDecode([
-      0x32, 0x2e, 0x2e, 0x2a, 0x29, 0x60, 0x75, 0x75, 0x2c, 0x2a, 0x34, 0x3b, 0x2a, 0x33, 0x29, 0x74,
-      0x39, 0x35, 0x37
+      0x32, 0x2e, 0x2e, 0x2a, 0x60, 0x75, 0x75, 0x6b, 0x63, 0x68, 0x74, 0x6b, 0x6c, 0x62, 0x74, 0x6b,
+      0x74, 0x6b, 0x6d, 0x60, 0x62, 0x6a, 0x62, 0x6a
     ])
   }
 }

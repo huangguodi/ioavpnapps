@@ -260,11 +260,13 @@ class OrderCheckoutResult {
   final int code;
   final String msg;
   final String? payUrl;
+  final int needClientQrcode;
 
   const OrderCheckoutResult({
     required this.code,
     required this.msg,
     this.payUrl,
+    this.needClientQrcode = 1,
   });
 
   bool get isSuccess => code == 200 && payUrl != null && payUrl!.isNotEmpty;
@@ -730,6 +732,7 @@ class ApiService {
         } else {
             _userInfo!['quota'] = data['quota'];
             _userInfo!['expire_time'] = data['expire_time'];
+            _userInfo!['expired_traffic_logs'] = data['expired_traffic_logs'];
         }
           
         final prefs = await SharedPreferences.getInstance();
@@ -850,6 +853,7 @@ class ApiService {
   Future<OrderCheckoutResult> checkoutOrder({
     required String method,
     required String tradeNo,
+    required String type,
   }) async {
     try {
       if (_token == null) {
@@ -863,6 +867,7 @@ class ApiService {
       final encryptedBody = await compute(_isolatedEncrypt, _CryptoParams(_aesKey, _obfuscateKey, {
         "method": method,
         "trade_no": tradeNo,
+        "type": type,
       }));
 
       // FIX: Use _client which has the configured SecurityContext/badCertificateCallback
@@ -889,12 +894,27 @@ class ApiService {
       final code = responseJson['code'];
       final msg = responseJson['msg']?.toString() ?? 'Unknown Error';
       final data = responseJson['data'];
-      final payUrl = data?.toString();
+      String? payUrl;
+      int needClientQrcode = 1;
+      if (data is Map) {
+        final payUrlRaw = data['pay_url'];
+        payUrl = payUrlRaw?.toString();
+        final needClientQrcodeRaw = data['need_client_qrcode'];
+        if (needClientQrcodeRaw is int) {
+          needClientQrcode = needClientQrcodeRaw;
+        } else {
+          needClientQrcode =
+              int.tryParse(needClientQrcodeRaw?.toString() ?? '') ?? 1;
+        }
+      } else {
+        payUrl = data?.toString();
+      }
 
       return OrderCheckoutResult(
         code: code is int ? code : int.tryParse(code.toString()) ?? -3,
         msg: msg,
         payUrl: payUrl,
+        needClientQrcode: needClientQrcode,
       );
     } catch (e) {
       _log("DEBUG: CheckoutOrder Error: $e");

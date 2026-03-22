@@ -211,35 +211,35 @@ class _SplashPageState extends State<SplashPage> {
                     ),
                     SafeArea(
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 22),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const SizedBox(height: 28),
                             const Text(
-                              '礼品卡密兑换',
+                              '礼品卡兑换',
                               style: TextStyle(
                                 color: Colors.white,
-                                fontSize: 28,
+                                fontSize: 26,
                                 fontWeight: FontWeight.w800,
                               ),
                             ),
-                            const SizedBox(height: 16),
+                            const SizedBox(height: 9),
                             const Text(
-                              '礼品卡密兑换，即可获得 100GB 高速流量包，流量实时到账，立即生效使用',
+                              '您将获得 100GB流量包,有效期5天，流量实时到账，立即生效使用',
                               style: TextStyle(
                                 color: Colors.white70,
-                                fontSize: 14,
-                                height: 1.6,
+                                fontSize: 13,
+                                height: 1.4,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
-                            const SizedBox(height: 12),
+                            const SizedBox(height: 7),
                             const Text(
-                              '获取方案：请联系群主或您的推荐人获取卡密',
+                              '获取方案：请联系推荐人获取礼品卡密',
                               style: TextStyle(
                                 color: Colors.white54,
-                                fontSize: 13,
+                                fontSize: 12,
                                 height: 1.6,
                               ),
                             ),
@@ -366,7 +366,7 @@ class _SplashPageState extends State<SplashPage> {
                             ),
                           ],
                         ),
-                      ),
+                      ),                    
                     ),
                   ],
                 ),

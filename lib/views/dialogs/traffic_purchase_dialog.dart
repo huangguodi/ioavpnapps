@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:app/core/constants.dart';
 import 'package:app/services/api_service.dart';
-import 'package:app/core/utils.dart'; // For _formatOrderTime if needed, or implement locally
 import 'package:app/views/widgets/custom_dialog.dart';
 
 class TrafficPackageOption {
@@ -25,21 +25,21 @@ class TrafficPackageOption {
 const List<TrafficPackageOption> _trafficPackages = [
   TrafficPackageOption(
     id: '100GB',
-    item: '100GB/永久',
+    item: '100GB/流量包',
     amount: '9.99',
     normalAssetFileName: '100GB.png',
     selectedAssetFileName: '100GBs.png',
   ),
   TrafficPackageOption(
     id: '500GB',
-    item: '500GB/永久',
+    item: '500GB/流量包',
     amount: '29.99',
     normalAssetFileName: '500GB.png',
     selectedAssetFileName: '500GBs.png',
   ),
   TrafficPackageOption(
     id: '1000GB',
-    item: '1000GB/永久',
+    item: '1000GB/流量包',
     amount: '89.99',
     normalAssetFileName: '1000GB.png',
     selectedAssetFileName: '1000GBs.png',
@@ -149,7 +149,7 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                         ),
                         const SizedBox(height: 4),
                         const Text(
-                          '节点采用 CN2 GIA + BGP 智能多线高端骨干网络承载，智能优化回国线路，无普通线路\n无劣质中转线路、无超售拥堵\n为你带来超低级延迟体验\n注意：购买 1000GB(￥89.99)的流量包\n可联系客服开通专属的独享节点',
+                          '节点采用 CN2 GIA + BGP 智能多线高端骨干网络承载，智能优化回国线路，无普通线路\n无劣质中转线路、无超售拥堵\n为你带来超低级延迟体验\n\n购买 1000GB(￥89.99)的流量包套餐\n可联系客服开通专属的独享节点',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Colors.white70,
@@ -288,6 +288,11 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
     required String selectedAssetFileName,
   }) {
     final isSelected = index == selectedIndex;
+    final tagAlignment = index == 1
+        ? (isSelected
+            ? const Alignment(0.60, -0.50)
+            : const Alignment(0.72, -0.52))
+        : const Alignment(0.77, -0.69);
     return Expanded(
       flex: isSelected ? 115 : 100,
       child: GestureDetector(
@@ -296,9 +301,34 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
           margin: EdgeInsets.only(top: isSelected ? 0 : 16.0),
-          child: Image.asset(
-            AppAssets.resolveImage(context, isSelected ? selectedAssetFileName : normalAssetFileName),
-            fit: BoxFit.contain,
+          child: Stack(
+            children: [
+              Image.asset(
+                AppAssets.resolveImage(context, isSelected ? selectedAssetFileName : normalAssetFileName),
+                fit: BoxFit.contain,
+              ),
+              Positioned.fill(
+                child: Align(
+                  alignment: tagAlignment,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2B4A5F).withValues(alpha: 0.95),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const Text(
+                      '时长',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -350,6 +380,8 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
 
         final initialMethodId = paymentMethods.isNotEmpty ? paymentMethods.first.id : null;
         int? selectedMethodId = initialMethodId;
+        const orderTypes = ['年', '半年', '季', '月'];
+        var selectedOrderType = '月';
         var isPaying = false;
         return StatefulBuilder(
           builder: (context, setDialogState) {
@@ -360,6 +392,18 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
               if (normalized.contains('usdt') || name.contains('泰达')) return Icons.currency_bitcoin_rounded;
               return Icons.payments_rounded;
             }
+            double multiplierForType(String type) {
+              if (type == '季') return 1.8;
+              if (type == '半年') return 3;
+              if (type == '年') return 4.8;
+              return 1;
+            }
+
+            final baseAmount =
+                double.tryParse(amount.replaceAll(',', '').trim()) ?? 0;
+            final displayAmount =
+                (baseAmount * multiplierForType(selectedOrderType))
+                    .toStringAsFixed(2);
 
             return Dialog(
               backgroundColor: Colors.transparent,
@@ -419,7 +463,7 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                       const SizedBox(height: 12),
                       Container(
                         width: double.infinity,
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
                         decoration: BoxDecoration(
                           color: Colors.white.withValues(alpha: 0.06),
                           borderRadius: BorderRadius.circular(12),
@@ -428,14 +472,67 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                         child: Column(
                           children: [
                             _buildOrderDetailRow('订单号', orderNo ?? '--'),
-                            const SizedBox(height: 8),
+                            const SizedBox(height: 2),
                             _buildOrderDetailRow('流量包', packageItem),
-                            const SizedBox(height: 8),
-                            _buildOrderDetailRow('付款金额', amount),
-                            const SizedBox(height: 8),
+                            const SizedBox(height: 2),
+                            _buildOrderDetailRow('付款金额', displayAmount),
+                            const SizedBox(height: 2),
                             _buildOrderDetailRow('创建时间', createdAt == null ? '--' : _formatOrderTime(createdAt)),
                           ],
                         ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          const Text(
+                            '时长',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                children: orderTypes.map((type) {
+                                  final selected = selectedOrderType == type;
+                                  return Padding(
+                                    padding: const EdgeInsets.only(left: 2),
+                                    child: InkWell(
+                                      borderRadius: BorderRadius.circular(999),
+                                      onTap: () => setDialogState(() => selectedOrderType = type),
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: selected
+                                              ? const Color(0xFF96CBFF).withValues(alpha: 0.18)
+                                              : Colors.white.withValues(alpha: 0.05),
+                                          borderRadius: BorderRadius.circular(999),
+                                          border: Border.all(
+                                            color: selected
+                                                ? const Color(0xFF96CBFF)
+                                                : Colors.white.withValues(alpha: 0.1),
+                                          ),
+                                        ),
+                                        child: Text(
+                                          type,
+                                          style: TextStyle(
+                                            color: selected ? const Color(0xFF96CBFF) : Colors.white70,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 14),
                       const Text(
@@ -462,7 +559,7 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                         )
                       else
                         Container(
-                          constraints: const BoxConstraints(maxHeight: 135),
+                          constraints: const BoxConstraints(maxHeight: 160),
                           child: ListView.builder(
                             shrinkWrap: true,
                             padding: EdgeInsets.zero,
@@ -477,7 +574,7 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                                   onTap: () => setDialogState(() => selectedMethodId = method.id),
                                   child: Container(
                                     width: double.infinity,
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
                                     decoration: BoxDecoration(
                                       color: selected
                                           ? const Color(0xFF96CBFF).withValues(alpha: 0.18)
@@ -491,14 +588,16 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                                     ),
                                     child: Row(
                                       children: [
-                                        Icon(iconFor(method.name), color: const Color(0xFF96CBFF), size: 20),
-                                        const SizedBox(width: 10),
+                                        Icon(iconFor(method.name), color: const Color(0xFF96CBFF), size: 18),
+                                        const SizedBox(width: 8),
                                         Expanded(
                                           child: Text(
                                             method.name,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
                                             style: const TextStyle(
                                               color: Colors.white,
-                                              fontSize: 13,
+                                              fontSize: 12,
                                               fontWeight: FontWeight.w700,
                                             ),
                                           ),
@@ -506,7 +605,7 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                                         Icon(
                                           selected ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
                                           color: selected ? const Color(0xFF96CBFF) : Colors.white30,
-                                          size: 18,
+                                          size: 17,
                                         ),
                                       ],
                                     ),
@@ -543,6 +642,7 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                                       final checkoutResult = await ApiService().checkoutOrder(
                                         method: selected.id.toString(),
                                         tradeNo: orderNo,
+                                        type: selectedOrderType,
                                       );
                                       if (!dialogContext.mounted) return;
                                       setDialogState(() => isPaying = false);
@@ -564,6 +664,17 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                                           isError: true,
                                         );
                                         return;
+                                      }
+
+                                      if (checkoutResult.needClientQrcode == 1) {
+                                        final shouldOpenBrowser = await _showPaymentQrDialog(
+                                          payUrl: checkoutResult.payUrl!,
+                                          paymentMethodName: selected.name,
+                                        );
+                                        if (!dialogContext.mounted) return;
+                                        if (!shouldOpenBrowser) {
+                                          return;
+                                        }
                                       }
 
                                       final opened = await launchUrl(payUri, mode: LaunchMode.externalApplication);
@@ -625,12 +736,12 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox(
-          width: 72,
+          width: 62,
           child: Text(
             '$label：',
             style: const TextStyle(
               color: Colors.white54,
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: FontWeight.w500,
             ),
           ),
@@ -640,7 +751,7 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
             value,
             style: const TextStyle(
               color: Colors.white,
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -651,6 +762,278 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
 
   String _formatOrderTime(DateTime time) {
     return "${time.year}-${time.month.toString().padLeft(2, '0')}-${time.day.toString().padLeft(2, '0')} ${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}";
+  }
+
+  Future<bool> _showPaymentQrDialog({
+    required String payUrl,
+    required String paymentMethodName,
+  }) async {
+    final normalizedMethod = paymentMethodName.toLowerCase();
+    final isWeChat = paymentMethodName.contains('微信') || normalizedMethod.contains('wechat');
+    final isAlipay = paymentMethodName.contains('支付宝') || normalizedMethod.contains('alipay');
+    final themePrimaryColor = isWeChat
+        ? const Color(0xFF09C562)
+        : isAlipay
+            ? const Color(0xFF1677FF)
+            : const Color(0xFF11C988);
+    final themeAccentColor = isWeChat
+        ? const Color(0xFF5EE68E)
+        : isAlipay
+            ? const Color(0xFF6EB0FF)
+            : const Color(0xFF96CBFF);
+    final titleText = isWeChat
+        ? '微信扫码付款'
+        : isAlipay
+            ? '支付宝扫码付款'
+            : '扫码付款';
+    final payHintText = isWeChat
+        ? '打开微信APP扫码付款'
+        : isAlipay
+            ? '打开支付宝APP扫码付款'
+            : '打开支付宝/ 微信APP扫码付款';
+    final payIcon = isWeChat
+        ? Icons.wechat_rounded
+        : isAlipay
+            ? Icons.account_balance_wallet_rounded
+            : Icons.qr_code_2_rounded;
+    final shouldOpenBrowser = await showAnimatedDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        final media = MediaQuery.of(dialogContext);
+        final isCompact = media.size.height < 760 || media.size.width < 390;
+        final qrSizeByWidth = (media.size.width - 120).clamp(160.0, 220.0).toDouble();
+        final qrSizeByHeight = (media.size.height * 0.30).clamp(150.0, 220.0).toDouble();
+        final qrSize = qrSizeByWidth < qrSizeByHeight ? qrSizeByWidth : qrSizeByHeight;
+        final qrCornerSize = isCompact ? 18.0 : 22.0;
+        final titleFontSize = isCompact ? 18.0 : 24.0;
+        final hintFontSize = isCompact ? 15.0 : 18.0;
+        final subHintFontSize = isCompact ? 11.0 : 12.0;
+        final buttonFontSize = isCompact ? 14.0 : 16.0;
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: EdgeInsets.symmetric(
+            horizontal: isCompact ? 12 : 20,
+            vertical: isCompact ? 12 : 24,
+          ),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 420),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Color.alphaBlend(themePrimaryColor.withValues(alpha: 0.22), const Color(0xFF1D3650)),
+                  const Color(0xFF13283B),
+                ],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              ),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: themeAccentColor, width: 1.1),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  blurRadius: 24,
+                  offset: const Offset(0, 12),
+                ),
+              ],
+            ),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: media.size.height * 0.86),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(isCompact ? 14 : 18, 14, isCompact ? 14 : 18, 14),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: isCompact ? 30 : 34,
+                            height: isCompact ? 30 : 34,
+                            decoration: BoxDecoration(
+                              color: themeAccentColor.withValues(alpha: 0.2),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Icon(payIcon, color: themeAccentColor, size: isCompact ? 19 : 22),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              titleText,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: titleFontSize,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                          InkWell(
+                            borderRadius: BorderRadius.circular(99),
+                            onTap: () => Navigator.of(dialogContext).pop(false),
+                            child: const Padding(
+                              padding: EdgeInsets.all(4),
+                              child: Icon(Icons.close_rounded, color: Colors.white60, size: 20),
+                            ),
+                          ),
+                        ],
+                      ),
+                      SizedBox(height: isCompact ? 10 : 14),
+                      Container(
+                        padding: EdgeInsets.all(isCompact ? 8 : 12),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(14),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.16),
+                              blurRadius: 12,
+                              offset: const Offset(0, 6),
+                            ),
+                          ],
+                        ),
+                        child: Stack(
+                          children: [
+                            QrImageView(
+                              data: payUrl,
+                              size: qrSize,
+                              backgroundColor: Colors.white,
+                              eyeStyle: const QrEyeStyle(
+                                eyeShape: QrEyeShape.square,
+                                color: Colors.black,
+                              ),
+                              dataModuleStyle: const QrDataModuleStyle(
+                                dataModuleShape: QrDataModuleShape.square,
+                                color: Colors.black,
+                              ),
+                            ),
+                            Positioned(
+                              left: 0,
+                              top: 0,
+                              child: Container(
+                                width: qrCornerSize,
+                                height: qrCornerSize,
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    left: BorderSide(color: themePrimaryColor, width: 3),
+                                    top: BorderSide(color: themePrimaryColor, width: 3),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              right: 0,
+                              top: 0,
+                              child: Container(
+                                width: qrCornerSize,
+                                height: qrCornerSize,
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    right: BorderSide(color: themePrimaryColor, width: 3),
+                                    top: BorderSide(color: themePrimaryColor, width: 3),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              left: 0,
+                              bottom: 0,
+                              child: Container(
+                                width: qrCornerSize,
+                                height: qrCornerSize,
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    left: BorderSide(color: themePrimaryColor, width: 3),
+                                    bottom: BorderSide(color: themePrimaryColor, width: 3),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              right: 0,
+                              bottom: 0,
+                              child: Container(
+                                width: qrCornerSize,
+                                height: qrCornerSize,
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    right: BorderSide(color: themePrimaryColor, width: 3),
+                                    bottom: BorderSide(color: themePrimaryColor, width: 3),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      SizedBox(height: isCompact ? 10 : 12),
+                      Text(
+                        payHintText,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: hintFontSize,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        '如无法扫码，可继续在浏览器内完成支付',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.72),
+                          fontSize: subHintFontSize,
+                        ),
+                      ),
+                      SizedBox(height: isCompact ? 10 : 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.of(dialogContext).pop(false),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.white70,
+                                side: BorderSide(color: Colors.white.withValues(alpha: 0.22)),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                padding: EdgeInsets.symmetric(vertical: isCompact ? 11 : 13),
+                              ),
+                              child: Text(
+                                '取消',
+                                style: TextStyle(fontWeight: FontWeight.w700, fontSize: buttonFontSize),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            flex: 2,
+                            child: ElevatedButton(
+                              onPressed: () => Navigator.of(dialogContext).pop(true),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: themePrimaryColor,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                padding: EdgeInsets.symmetric(vertical: isCompact ? 11 : 13),
+                              ),
+                              child: Text(
+                                '继续打开浏览器',
+                                style: TextStyle(fontWeight: FontWeight.w800, fontSize: buttonFontSize),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    return shouldOpenBrowser == true;
   }
 
   Future<void> _showTipDialog({

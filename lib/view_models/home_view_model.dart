@@ -5,6 +5,18 @@ import 'package:app/core/utils.dart';
 import 'package:app/services/api_service.dart';
 import 'package:app/services/mihomo_service.dart';
 
+class ExpiredTrafficLogNotice {
+  final String label;
+  final int trafficBytes;
+  final String createDate;
+
+  const ExpiredTrafficLogNotice({
+    required this.label,
+    required this.trafficBytes,
+    required this.createDate,
+  });
+}
+
 class HomeViewModel extends ChangeNotifier {
   // State
   ConnectionMode _connectionMode;
@@ -30,6 +42,7 @@ class HomeViewModel extends ChangeNotifier {
   DateTime? _lastSwitchTime;
   DateTime _lastNodeInfoRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
   bool _isRefreshingNodeInfo = false;
+  final List<ExpiredTrafficLogNotice> _pendingExpiredTrafficLogNotices = [];
   static const Set<String> _excludedProxyNames = {
     'DIRECT', 'REJECT', 'GLOBAL', 'REJECT-DROP', 'COMPATIBLE', 'PASS',
     'SMVPN', '自动选择', '故障转移', '负载均衡'
@@ -45,6 +58,8 @@ class HomeViewModel extends ChangeNotifier {
   String get globalNodeType => _globalNodeType;
   String get globalNodeCountry => _globalNodeCountry;
   bool get globalNodeUdp => _globalNodeUdp;
+  List<ExpiredTrafficLogNotice> get pendingExpiredTrafficLogNotices =>
+      List<ExpiredTrafficLogNotice>.unmodifiable(_pendingExpiredTrafficLogNotices);
 
   // Init
   void init() {
@@ -216,6 +231,22 @@ class HomeViewModel extends ChangeNotifier {
       final newQuota = newUserInfo?['quota'];
       final parsedQuota = _toNonNegativeInt(newQuota);
       _quotaBytes = parsedQuota;
+      final expiredTrafficLogsRaw = newUserInfo?['expired_traffic_logs'];
+      if (expiredTrafficLogsRaw is List && expiredTrafficLogsRaw.isNotEmpty) {
+        for (final item in expiredTrafficLogsRaw) {
+          if (item is! Map) continue;
+          final label = item['label']?.toString() ?? '--';
+          final trafficBytes = _toNonNegativeInt(item['traffic']);
+          final createDate = _extractDate(item['create_time']?.toString());
+          _pendingExpiredTrafficLogNotices.add(
+            ExpiredTrafficLogNotice(
+              label: label,
+              trafficBytes: trafficBytes,
+              createDate: createDate,
+            ),
+          );
+        }
+      }
 
       notifyListeners();
       await _refreshGlobalNodeInfo();
@@ -232,6 +263,28 @@ class HomeViewModel extends ChangeNotifier {
     final parsed = int.tryParse(value?.toString() ?? '');
     if (parsed == null || parsed <= 0) return 0;
     return parsed;
+  }
+
+  String _extractDate(String? value) {
+    if (value == null || value.isEmpty) return '--';
+    try {
+      final time = DateTime.parse(value);
+      final y = time.year.toString().padLeft(4, '0');
+      final m = time.month.toString().padLeft(2, '0');
+      final d = time.day.toString().padLeft(2, '0');
+      return '$y-$m-$d';
+    } catch (_) {
+      final tIndex = value.indexOf('T');
+      if (tIndex > 0) return value.substring(0, tIndex);
+      return value;
+    }
+  }
+
+  ExpiredTrafficLogNotice? consumeNextExpiredTrafficLogNotice() {
+    if (_pendingExpiredTrafficLogNotices.isEmpty) return null;
+    final notice = _pendingExpiredTrafficLogNotices.removeAt(0);
+    notifyListeners();
+    return notice;
   }
 
   // Node Info

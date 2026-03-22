@@ -10,13 +10,10 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 60
     env:
-      BUNDLE_ID: xyz.appinstall.nov.carbon.lam
-      EXT_BUNDLE_ID: xyz.appinstall.nov.carbon.lam.PacketTunnel
+      BUNDLE_ID: app.celery7240.capricorn2328
       IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
       IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
       IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
-      IOS_MOBILEPROVISION_BASE64_APP: ${{ secrets.IOS_MOBILEPROVISION_BASE64_APP }}
-      IOS_MOBILEPROVISION_BASE64_EXT: ${{ secrets.IOS_MOBILEPROVISION_BASE64_EXT }}
 
     steps:
       - name: Checkout
@@ -38,19 +35,13 @@ jobs:
 
       - name: Build IPA (signed if cert secrets exist)
         run: |
-          APP_PROFILE_B64="$IOS_MOBILEPROVISION_BASE64_APP"
-          if [ -z "$APP_PROFILE_B64" ]; then APP_PROFILE_B64="$IOS_MOBILEPROVISION_BASE64"; fi
-          EXT_PROFILE_B64="$IOS_MOBILEPROVISION_BASE64_EXT"
-          if [ -z "$EXT_PROFILE_B64" ]; then EXT_PROFILE_B64="$APP_PROFILE_B64"; fi
-          if [ -n "$IOS_P12_BASE64" ] && [ -n "$IOS_P12_PASSWORD" ] && [ -n "$APP_PROFILE_B64" ]; then
+          if [ -n "$IOS_P12_BASE64" ] && [ -n "$IOS_P12_PASSWORD" ] && [ -n "$IOS_MOBILEPROVISION_BASE64" ]; then
             CERT_PATH=$RUNNER_TEMP/cert.p12
-            APP_PROFILE_PATH=$RUNNER_TEMP/profile_app.mobileprovision
-            EXT_PROFILE_PATH=$RUNNER_TEMP/profile_ext.mobileprovision
+            PROFILE_PATH=$RUNNER_TEMP/profile.mobileprovision
             KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
             IOS_P12_PASSWORD_CLEAN=$(printf %s "$IOS_P12_PASSWORD" | tr -d '\r\n')
             echo -n "$IOS_P12_BASE64" | base64 --decode -o "$CERT_PATH"
-            echo -n "$APP_PROFILE_B64" | base64 --decode -o "$APP_PROFILE_PATH"
-            echo -n "$EXT_PROFILE_B64" | base64 --decode -o "$EXT_PROFILE_PATH"
+            echo -n "$IOS_MOBILEPROVISION_BASE64" | base64 --decode -o "$PROFILE_PATH"
             security create-keychain -p "" "$KEYCHAIN_PATH"
             security set-keychain-settings "$KEYCHAIN_PATH"
             security unlock-keychain -p "" "$KEYCHAIN_PATH"
@@ -62,35 +53,22 @@ jobs:
             fi
             security list-keychains -d user -s "$KEYCHAIN_PATH"
             mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-            security cms -D -i "$APP_PROFILE_PATH" > "$RUNNER_TEMP/profile_app.plist"
-            security cms -D -i "$EXT_PROFILE_PATH" > "$RUNNER_TEMP/profile_ext.plist"
-            APP_PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$RUNNER_TEMP/profile_app.plist")
-            APP_PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$RUNNER_TEMP/profile_app.plist")
-            EXT_PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$RUNNER_TEMP/profile_ext.plist")
-            EXT_PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$RUNNER_TEMP/profile_ext.plist")
-            cp "$APP_PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$APP_PROFILE_UUID.mobileprovision"
-            cp "$EXT_PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$EXT_PROFILE_UUID.mobileprovision"
-            TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$RUNNER_TEMP/profile_app.plist")
-            GET_TASK_ALLOW=$(/usr/libexec/PlistBuddy -c "Print Entitlements:get-task-allow" "$RUNNER_TEMP/profile_app.plist")
-            APP_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$RUNNER_TEMP/profile_app.plist")
-            APP_GROUPS=$(/usr/libexec/PlistBuddy -c "Print Entitlements:com.apple.security.application-groups:0" "$RUNNER_TEMP/profile_app.plist" 2>/dev/null || true)
-            APP_NETEXT=$(/usr/libexec/PlistBuddy -c "Print Entitlements:com.apple.developer.networking.networkextension:0" "$RUNNER_TEMP/profile_app.plist" 2>/dev/null || true)
-            EXT_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$RUNNER_TEMP/profile_ext.plist")
-            EXT_GROUPS=$(/usr/libexec/PlistBuddy -c "Print Entitlements:com.apple.security.application-groups:0" "$RUNNER_TEMP/profile_ext.plist" 2>/dev/null || true)
-            EXT_NETEXT=$(/usr/libexec/PlistBuddy -c "Print Entitlements:com.apple.developer.networking.networkextension:0" "$RUNNER_TEMP/profile_ext.plist" 2>/dev/null || true)
+            security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/profile.plist"
+            PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" "$RUNNER_TEMP/profile.plist")
+            PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print Name" "$RUNNER_TEMP/profile.plist")
+            cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$PROFILE_UUID.mobileprovision"
+            TEAM_ID=$(/usr/libexec/PlistBuddy -c "Print TeamIdentifier:0" "$RUNNER_TEMP/profile.plist")
+            GET_TASK_ALLOW=$(/usr/libexec/PlistBuddy -c "Print Entitlements:get-task-allow" "$RUNNER_TEMP/profile.plist")
+            APP_IDENTIFIER=$(/usr/libexec/PlistBuddy -c "Print Entitlements:application-identifier" "$RUNNER_TEMP/profile.plist")
             PROFILE_BUNDLE_ID=${APP_IDENTIFIER#${TEAM_ID}.}
-            PROFILE_EXT_BUNDLE_ID=${EXT_IDENTIFIER#${TEAM_ID}.}
-            if [ -n "$PROFILE_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then BUNDLE_ID="$PROFILE_BUNDLE_ID"; fi
-            if [ -n "$PROFILE_EXT_BUNDLE_ID" ] && [ "$PROFILE_EXT_BUNDLE_ID" != "*" ]; then EXT_BUNDLE_ID="$PROFILE_EXT_BUNDLE_ID"; fi
-            if [ -z "$APP_NETEXT" ] || [ -z "$APP_GROUPS" ] || [ -z "$EXT_NETEXT" ] || [ -z "$EXT_GROUPS" ]; then
-              echo "Provisioning profile missing required entitlements (NetworkExtension/AppGroup)."
-              exit 1
+            if [ -n "$PROFILE_BUNDLE_ID" ] && [ "$PROFILE_BUNDLE_ID" != "*" ]; then
+              BUNDLE_ID="$PROFILE_BUNDLE_ID"
             fi
             HAS_PROVISIONED_DEVICES="false"
-            if /usr/libexec/PlistBuddy -c "Print ProvisionedDevices:0" "$RUNNER_TEMP/profile_app.plist" >/dev/null 2>&1; then
+            if /usr/libexec/PlistBuddy -c "Print ProvisionedDevices:0" "$RUNNER_TEMP/profile.plist" >/dev/null 2>&1; then
               HAS_PROVISIONED_DEVICES="true"
             fi
-            PROVISIONS_ALL_DEVICES=$(/usr/libexec/PlistBuddy -c "Print ProvisionsAllDevices" "$RUNNER_TEMP/profile_app.plist" 2>/dev/null || echo "false")
+            PROVISIONS_ALL_DEVICES=$(/usr/libexec/PlistBuddy -c "Print ProvisionsAllDevices" "$RUNNER_TEMP/profile.plist" 2>/dev/null || echo "false")
             EXPORT_METHOD="app-store"
             if [ "$GET_TASK_ALLOW" = "true" ]; then
               EXPORT_METHOD="development"
@@ -104,8 +82,7 @@ jobs:
             /usr/libexec/PlistBuddy -c "Add :signingStyle string manual" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :teamID string $TEAM_ID" "$EXPORT_PLIST"
             /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
-            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $APP_PROFILE_NAME" "$EXPORT_PLIST"
-            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$EXT_BUNDLE_ID string $EXT_PROFILE_NAME" "$EXPORT_PLIST"
+            /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$BUNDLE_ID string $PROFILE_NAME" "$EXPORT_PLIST"
             pushd ios
             xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
               -archivePath "$PWD/build/Runner.xcarchive" archive \

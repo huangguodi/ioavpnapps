@@ -30,6 +30,8 @@ class _HomePageContent extends StatefulWidget {
 }
 
 class _HomePageContentState extends State<_HomePageContent> with WidgetsBindingObserver {
+  bool _showingExpiredTrafficDialog = false;
+
   @override
   void initState() {
     super.initState();
@@ -75,6 +77,12 @@ class _HomePageContentState extends State<_HomePageContent> with WidgetsBindingO
   Widget build(BuildContext context) {
     return Consumer<HomeViewModel>(
       builder: (context, vm, child) {
+        if (!_showingExpiredTrafficDialog &&
+            vm.pendingExpiredTrafficLogNotices.isNotEmpty) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _showNextExpiredTrafficDialog(vm);
+          });
+        }
         return Scaffold(
           backgroundColor: AppColors.background,
           body: Stack(
@@ -178,5 +186,44 @@ class _HomePageContentState extends State<_HomePageContent> with WidgetsBindingO
         );
       },
     );
+  }
+
+  Future<void> _showNextExpiredTrafficDialog(HomeViewModel vm) async {
+    if (_showingExpiredTrafficDialog || !mounted) return;
+    final notice = vm.consumeNextExpiredTrafficLogNotice();
+    if (notice == null) return;
+    _showingExpiredTrafficDialog = true;
+    final shouldPurchase = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('流量包过期提醒'),
+          content: Text(
+            '${notice.label} 流量包于 ${notice.createDate} 过期\n过期了流量：${formatBytes(notice.trafficBytes)}',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('知道了'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('购买流量包'),
+            ),
+          ],
+        );
+      },
+    );
+    _showingExpiredTrafficDialog = false;
+    if (!mounted) return;
+    if (shouldPurchase == true) {
+      await TrafficPurchaseDialog.show(context);
+    }
+    if (vm.pendingExpiredTrafficLogNotices.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _showNextExpiredTrafficDialog(vm);
+      });
+    }
   }
 }
