@@ -394,7 +394,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
-				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				CURRENT_PROJECT_VERSION = 2;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
@@ -413,6 +413,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = app.celery7240.capricorn2328.PacketTunnel;
 				PRODUCT_NAME = PacketTunnel;
 				SKIP_INSTALL = YES;
+				MARKETING_VERSION = 1.0.1;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 			};
@@ -422,7 +423,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
-				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				CURRENT_PROJECT_VERSION = 2;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
@@ -441,6 +442,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = app.celery7240.capricorn2328.PacketTunnel;
 				PRODUCT_NAME = PacketTunnel;
 				SKIP_INSTALL = YES;
+				MARKETING_VERSION = 1.0.1;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
@@ -449,7 +451,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
-				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				CURRENT_PROJECT_VERSION = 2;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
@@ -468,6 +470,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = app.celery7240.capricorn2328.PacketTunnel;
 				PRODUCT_NAME = PacketTunnel;
 				SKIP_INSTALL = YES;
+				MARKETING_VERSION = 1.0.1;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Profile;
