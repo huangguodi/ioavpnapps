@@ -352,7 +352,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             return
           }
           do {
-            try session.startVPNTunnel(options: ["permission_probe": "1"])
+            try session.startVPNTunnel(options: ["permission_probe": "1" as NSString])
             session.stopVPNTunnel()
             completion(nil)
           } catch {
