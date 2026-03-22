@@ -177,11 +177,15 @@ class MihomoService {
       final result = await _channel.invokeMethod('requestVpnPermission');
       return result == true;
     } on PlatformException catch (e) {
+      final message = (e.message ?? '').toLowerCase();
       AppLogger.e("MihomoService: requestVpnPermission error: ${e.message}");
-      return false;
+      if (message.contains('permission denied') || message.contains('not authorized')) {
+        return false;
+      }
+      return true;
     } catch (e) {
       AppLogger.e("MihomoService: requestVpnPermission exception: $e");
-      return false;
+      return true;
     }
   }
 

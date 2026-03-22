@@ -259,7 +259,15 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
         completion(nil, error)
         return
       }
-      if let manager = managers?.first(where: { $0.localizedDescription == self.tunnelDescription }) ?? managers?.first {
+      let matched = managers?.first(where: { manager in
+        if let proto = manager.protocolConfiguration as? NETunnelProviderProtocol {
+          if proto.providerBundleIdentifier == self.tunnelBundleIdentifier {
+            return true
+          }
+        }
+        return manager.localizedDescription == self.tunnelDescription
+      })
+      if let manager = matched {
         completion(manager, nil)
       } else {
         completion(NETunnelProviderManager(), nil)
@@ -335,10 +343,37 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           return
         }
         manager.loadFromPreferences { loadError in
-          completion(loadError)
+          if let loadError = loadError {
+            completion(loadError)
+            return
+          }
+          guard let session = manager.connection as? NETunnelProviderSession else {
+            completion(NSError(domain: "Tunnel", code: -2))
+            return
+          }
+          do {
+            try session.startVPNTunnel(options: ["permission_probe": "1"])
+            session.stopVPNTunnel()
+            completion(nil)
+          } catch {
+            if self.isPermissionDenied(error) {
+              completion(error)
+            } else {
+              completion(nil)
+            }
+          }
         }
       }
     }
+  }
+
+  private func isPermissionDenied(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    let message = nsError.localizedDescription.lowercased()
+    if message.contains("permission denied") || message.contains("not authorized") {
+      return true
+    }
+    return false
   }
 
   private func stopTunnel(completion: @escaping () -> Void) {
