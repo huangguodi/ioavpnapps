@@ -5,11 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 import 'services/api_service.dart';
+import 'services/global_error_reporter.dart';
 import 'services/tray_service.dart';
 import 'views/splash_page.dart';
 
 const MethodChannel _securityChannel = MethodChannel('com.accelerator.tg/security');
 Timer? _securityWatchdog;
+final GlobalKey<NavigatorState> _appNavigatorKey = GlobalKey<NavigatorState>();
 
 class _DirectOnlyHttpOverrides extends HttpOverrides {
   @override
@@ -57,6 +59,23 @@ Future<void> _enforceSecurity() async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  GlobalAppErrorReporter.initialize(_appNavigatorKey);
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    GlobalAppErrorReporter.showError(
+      title: '应用错误',
+      message: details.exceptionAsString(),
+      detail: details.stack?.toString(),
+    );
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    GlobalAppErrorReporter.showError(
+      title: '应用错误',
+      message: error.toString(),
+      detail: stack.toString(),
+    );
+    return true;
+  };
   
   // Initialize native keys early to prevent api call failures
   await ApiService().initNativeKeys();
@@ -100,7 +119,16 @@ Future<void> main() async {
     systemNavigationBarIconBrightness: Brightness.light, // 确保导航栏图标可见
   ));
   
-  runApp(const MyApp());
+  runZonedGuarded(
+    () => runApp(const MyApp()),
+    (error, stack) {
+      GlobalAppErrorReporter.showError(
+        title: '应用错误',
+        message: error.toString(),
+        detail: stack.toString(),
+      );
+    },
+  );
 }
 
 class MyApp extends StatefulWidget {
@@ -146,6 +174,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: _appNavigatorKey,
       title: 'VPN App',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF101F2D)),

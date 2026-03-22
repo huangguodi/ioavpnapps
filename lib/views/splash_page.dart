@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:app/services/api_service.dart';
+import 'package:app/services/global_error_reporter.dart';
 import 'package:app/services/mihomo_service.dart';
 import 'package:app/core/constants.dart';
 import 'package:app/views/widgets/custom_dialog.dart';
@@ -18,6 +19,7 @@ class SplashPage extends StatefulWidget {
 }
 
 class _SplashPageState extends State<SplashPage> {
+  String? _lastStartupError;
   @override
   void initState() {
     super.initState();
@@ -83,10 +85,17 @@ class _SplashPageState extends State<SplashPage> {
         final initialMode = await _resolveInitialMode();
         await _prepareHomeResources();
         _navigateToHome(initialMode);
+      } else {
+        await GlobalAppErrorReporter.showError(
+          title: '启动失败',
+          message: _lastStartupError ?? '服务启动失败，请检查网络后重试。',
+        );
       }
     } else {
-      // 失败退出APP
-      SystemNavigator.pop();
+      await GlobalAppErrorReporter.showError(
+        title: '启动失败',
+        message: errorMsg,
+      );
     }
   }
 
@@ -392,6 +401,7 @@ class _SplashPageState extends State<SplashPage> {
   }
 
   Future<bool> _startMihomo() async {
+    _lastStartupError = null;
     try {
       // Initialize service (copy assets, MMDB, etc.)
       await MihomoService().init();
@@ -409,69 +419,20 @@ class _SplashPageState extends State<SplashPage> {
            await MihomoService().start(subscribeUrl: subscribeUrl.toString());
            return true;
         } else {
+           _lastStartupError = '启动失败：缺少订阅地址';
            return false;
         }
       }
+      _lastStartupError = '启动失败：用户信息为空';
       return false;
     } on PlatformException catch (e) {
-      if (e.code == "VPN_PERMISSION_DENIED") {
-        if (mounted) {
-          await showAnimatedDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (context) => AlertDialog(
-              title: const Text('权限被拒绝'),
-              content: const Text('加速器需要 VPN 权限才能工作。请手动打开权限或重新启动应用授权。'),
-              actions: [
-                TextButton(
-                  onPressed: () {
-                    SystemNavigator.pop();
-                  },
-                  child: const Text('确定并退出'),
-                ),
-              ],
-            ),
-          );
-        }
-      } else {
-        // Handle generic start error
-        if (mounted) {
-           await showAnimatedDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (context) => AlertDialog(
-              title: const Text('启动失败'),
-              content: Text('服务启动失败，请检查网络或重试。\n错误: $e'),
-              actions: [
-                TextButton(
-                  onPressed: () => SystemNavigator.pop(),
-                  child: const Text('退出应用'),
-                ),
-              ],
-            ),
-          );
-        }
-      }
+      _lastStartupError = e.code == "VPN_PERMISSION_DENIED"
+          ? '权限被拒绝：加速器需要 VPN 权限才能工作。'
+          : '服务启动失败：${e.message ?? e.toString()}';
       return false;
     } catch (e) {
-       // Catch-all for non-PlatformExceptions (like the Exception thrown by start() after 3 retries)
-       if (mounted) {
-          await showAnimatedDialog(
-            context: context,
-            barrierDismissible: false,
-            builder: (context) => AlertDialog(
-              title: const Text('启动失败'),
-              content: Text('服务启动失败 (3次重试无效)。\n错误: $e'),
-              actions: [
-                TextButton(
-                  onPressed: () => SystemNavigator.pop(),
-                  child: const Text('退出应用'),
-                ),
-              ],
-            ),
-          );
-       }
-       return false;
+      _lastStartupError = '服务启动失败：$e';
+      return false;
     }
   }
 
