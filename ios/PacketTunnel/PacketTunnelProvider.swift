@@ -204,10 +204,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
   private func handleLightweightAppMessage(_ message: String) -> Data? {
     if message == "getMode" {
-      return MobileGetMode().data(using: .utf8)
+      return (MobileGetMode() as String).data(using: .utf8)
     }
     if message == "getProxies" {
-      return MobileGetProxies().data(using: .utf8)
+      return (MobileGetProxies() as String).data(using: .utf8)
     }
     if message.hasPrefix("getSelectedProxy|") {
       let groupName = String(message.dropFirst("getSelectedProxy|".count))

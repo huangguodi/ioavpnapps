@@ -117,21 +117,17 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles dict" "$EXPORT_PLIST"
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$MAIN_BUNDLE_ID string $MAIN_PROFILE_NAME" "$EXPORT_PLIST"
           /usr/libexec/PlistBuddy -c "Add :provisioningProfiles:$EXTENSION_BUNDLE_ID string $EXTENSION_PROFILE_NAME" "$EXPORT_PLIST"
-          ARCHIVE_LOG_PATH="$RUNNER_TEMP/xcodebuild-archive.log"
-          EXPORT_LOG_PATH="$RUNNER_TEMP/xcodebuild-export.log"
           pushd ios
           xcodebuild -workspace Runner.xcworkspace -scheme Runner -configuration Release \
             -destination "generic/platform=iOS" \
             -archivePath "$PWD/build/Runner.xcarchive" archive \
             DEVELOPMENT_TEAM="$TEAM_ID" \
             CODE_SIGN_STYLE=Manual \
-            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH" \
-            2>&1 | tee "$ARCHIVE_LOG_PATH"
+            OTHER_CODE_SIGN_FLAGS="--keychain $KEYCHAIN_PATH"
           xcodebuild -exportArchive \
             -archivePath "$PWD/build/Runner.xcarchive" \
             -exportOptionsPlist "$EXPORT_PLIST" \
-            -exportPath "$PWD/../build/ios/ipa" \
-            2>&1 | tee "$EXPORT_LOG_PATH"
+            -exportPath "$PWD/../build/ios/ipa"
           popd
 
       - name: Upload IPA artifact
@@ -141,13 +137,3 @@ jobs:
           path: |
             build/ios/ipa/*.ipa
           if-no-files-found: error
-
-      - name: Upload Xcode logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-xcode-logs
-          path: |
-            ${{ runner.temp }}/xcodebuild-archive.log
-            ${{ runner.temp }}/xcodebuild-export.log
-          if-no-files-found: ignore
