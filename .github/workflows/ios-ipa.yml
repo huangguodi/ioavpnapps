@@ -130,11 +130,23 @@ jobs:
             -exportPath "$PWD/../build/ios/ipa"
           popd
 
-      - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-ipa
-          path: |
-            build/ios/ipa/*.ipa
-          retention-days: 1
-          if-no-files-found: error
+      - name: Upload IPA to 0x0.st
+        run: |
+          set -eo pipefail
+          IPA_FILE=$(find build/ios/ipa -maxdepth 1 -name '*.ipa' | head -n 1)
+          if [ -z "$IPA_FILE" ]; then
+            echo "No IPA file found in build/ios/ipa"
+            exit 1
+          fi
+          IPA_URL=$(curl -fsS -F "file=@${IPA_FILE}" https://0x0.st)
+          if [ -z "$IPA_URL" ]; then
+            echo "Upload to 0x0.st failed"
+            exit 1
+          fi
+          echo "IPA_URL=$IPA_URL" >> "$GITHUB_ENV"
+          echo "IPA download URL: $IPA_URL"
+          {
+            echo "## IPA 下载地址"
+            echo
+            echo "$IPA_URL"
+          } >> "$GITHUB_STEP_SUMMARY"
