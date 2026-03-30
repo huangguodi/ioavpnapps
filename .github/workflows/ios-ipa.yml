@@ -130,7 +130,7 @@ jobs:
             -exportPath "$PWD/../build/ios/ipa"
           popd
 
-      - name: Upload IPA to 0x0.st
+      - name: Upload IPA to tmpfiles.org
         run: |
           set -eo pipefail
           IPA_FILE=$(find build/ios/ipa -maxdepth 1 -name '*.ipa' | head -n 1)
@@ -138,9 +138,11 @@ jobs:
             echo "No IPA file found in build/ios/ipa"
             exit 1
           fi
-          IPA_URL=$(curl -fsS -F "file=@${IPA_FILE}" https://0x0.st)
+          UPLOAD_RESPONSE=$(curl -fsS --retry 3 --retry-all-errors -F "file=@${IPA_FILE}" https://tmpfiles.org/api/v1/upload)
+          IPA_URL=$(python -c "import json,sys; data=json.loads(sys.argv[1]); print(data.get('data', {}).get('url', ''))" "$UPLOAD_RESPONSE")
           if [ -z "$IPA_URL" ]; then
-            echo "Upload to 0x0.st failed"
+            echo "Upload to tmpfiles.org failed"
+            echo "$UPLOAD_RESPONSE"
             exit 1
           fi
           echo "IPA_URL=$IPA_URL" >> "$GITHUB_ENV"
