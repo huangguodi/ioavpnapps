@@ -339,7 +339,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 
   private func completeTunnelManagerLoad(
     manager: NETunnelProviderManager?,
-    error: Error?,
+    error: Error?
   ) {
     let completions = pendingTunnelManagerCompletions
     pendingTunnelManagerCompletions.removeAll()
@@ -384,7 +384,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 
   private func loadTunnelManager(
     forceRefresh: Bool = false,
-    completion: @escaping (NETunnelProviderManager?, Error?) -> Void,
+    completion: @escaping (NETunnelProviderManager?, Error?) -> Void
   ) {
     if !forceRefresh, let cachedTunnelManager {
       completion(cachedTunnelManager, nil)
