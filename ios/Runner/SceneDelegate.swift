@@ -3,7 +3,7 @@ import UIKit
 
 final class SceneDelegate: FlutterSceneDelegate {
 
-  func scene(
+  override func scene(
     _ scene: UIScene,
     willConnectTo session: UISceneSession,
     options connectionOptions: UIScene.ConnectionOptions
