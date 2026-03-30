@@ -393,8 +393,10 @@
 		A90000060000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_STYLE = Manual;
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
 				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 2CS2A54XG8;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
@@ -412,6 +414,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiangyu.clash.packettunnel;
 				PRODUCT_NAME = PacketTunnel;
+				PROVISIONING_PROFILE_SPECIFIER = Clash_Extension_Profile;
 				SKIP_INSTALL = YES;
 				MARKETING_VERSION = 1.0.1;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -422,8 +425,10 @@
 		A90000060000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_STYLE = Manual;
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
 				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 2CS2A54XG8;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
@@ -441,6 +446,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiangyu.clash.packettunnel;
 				PRODUCT_NAME = PacketTunnel;
+				PROVISIONING_PROFILE_SPECIFIER = Clash_Extension_Profile;
 				SKIP_INSTALL = YES;
 				MARKETING_VERSION = 1.0.1;
 				SWIFT_VERSION = 5.0;
@@ -450,8 +456,10 @@
 		A90000060000000000000003 /* Profile */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_STYLE = Manual;
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/PacketTunnel.entitlements;
 				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 2CS2A54XG8;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
@@ -469,6 +477,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiangyu.clash.packettunnel;
 				PRODUCT_NAME = PacketTunnel;
+				PROVISIONING_PROFILE_SPECIFIER = Clash_Extension_Profile;
 				SKIP_INSTALL = YES;
 				MARKETING_VERSION = 1.0.1;
 				SWIFT_VERSION = 5.0;
@@ -533,7 +542,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = 2CS2A54XG8;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				HEADER_SEARCH_PATHS = (
@@ -552,6 +563,7 @@
 				PRODUCT_NAME = Runner;
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
+				PROVISIONING_PROFILE_SPECIFIER = Clash_Main_Profile;
 				SWIFT_VERSION = 5.0;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
@@ -721,7 +733,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = 2CS2A54XG8;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				HEADER_SEARCH_PATHS = (
@@ -739,6 +753,7 @@
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiangyu.clash;
 				PRODUCT_NAME = Runner;
+				PROVISIONING_PROFILE_SPECIFIER = Clash_Main_Profile;
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
@@ -752,7 +767,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Manual;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = 2CS2A54XG8;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				HEADER_SEARCH_PATHS = (
@@ -770,6 +787,7 @@
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiangyu.clash;
 				PRODUCT_NAME = Runner;
+				PROVISIONING_PROFILE_SPECIFIER = Clash_Main_Profile;
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				VERSIONING_SYSTEM = "apple-generic";
