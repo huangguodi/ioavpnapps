@@ -9,6 +9,21 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ErrorActionPreference = "Stop"
 $distDir = "dist"
+$javaCandidates = @(
+    "C:\Program Files\Android\Android Studio\jbr",
+    "C:\Program Files\Android\Android Studio\jre"
+)
+
+if (-not $env:JAVA_HOME) {
+    $resolvedJavaHome = $javaCandidates | Where-Object { Test-Path (Join-Path $_ "bin\java.exe") } | Select-Object -First 1
+    if ($resolvedJavaHome) {
+        $env:JAVA_HOME = $resolvedJavaHome
+    }
+}
+
+if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME "bin\java.exe"))) {
+    $env:Path = "$($env:JAVA_HOME)\bin;$env:Path"
+}
 
 # 1. Clean and Setup Dist Directory
 Write-Host "🧹 正在清理..." -ForegroundColor Cyan

@@ -23,6 +23,7 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "resources/mihomo_windows/mihomo.h"
+#include "utils.h"
 
 namespace {
 // Window Message for traffic updates (must be unique)
@@ -111,6 +112,137 @@ std::string TakeCString(char* ptr) {
   return value;
 }
 
+std::string ExtractJsonStringField(
+    const std::string& json,
+    size_t start,
+    size_t end,
+    const std::string& key) {
+  size_t key_pos = json.find("\"" + key + "\":", start);
+  if (key_pos == std::string::npos || key_pos > end) {
+    return "";
+  }
+  size_t value_start = json.find_first_not_of(" \t\n\r", key_pos + key.length() + 3);
+  if (value_start == std::string::npos || value_start > end || json[value_start] != '"') {
+    return "";
+  }
+  value_start++;
+  size_t value_end = json.find('"', value_start);
+  if (value_end == std::string::npos || value_end > end) {
+    return "";
+  }
+  return json.substr(value_start, value_end - value_start);
+}
+
+std::string ExtractJsonLiteralField(
+    const std::string& json,
+    size_t start,
+    size_t end,
+    const std::string& key) {
+  size_t key_pos = json.find("\"" + key + "\":", start);
+  if (key_pos == std::string::npos || key_pos > end) {
+    return "";
+  }
+  size_t value_start = json.find_first_not_of(" \t\n\r", key_pos + key.length() + 3);
+  if (value_start == std::string::npos || value_start > end) {
+    return "";
+  }
+  size_t value_end = json.find_first_of(",}", value_start);
+  if (value_end == std::string::npos || value_end > end) {
+    return "";
+  }
+  return json.substr(value_start, value_end - value_start);
+}
+
+std::string FindSelectedProxyNameFromJson(
+    const std::string& json,
+    const std::string& group_name) {
+  std::string group_key = "\"" + group_name + "\":";
+  size_t group_pos = json.find(group_key);
+  if (group_pos == std::string::npos) {
+    return "";
+  }
+  size_t now_pos = json.find("\"now\":", group_pos);
+  if (now_pos == std::string::npos) {
+    return "";
+  }
+  size_t value_start = json.find("\"", now_pos + 6);
+  if (value_start == std::string::npos) {
+    return "";
+  }
+  value_start++;
+  size_t value_end = json.find("\"", value_start);
+  if (value_end == std::string::npos) {
+    return "";
+  }
+  return json.substr(value_start, value_end - value_start);
+}
+
+bool FindProxyObjectRange(
+    const std::string& json,
+    const std::string& proxy_name,
+    size_t* object_start,
+    size_t* object_end) {
+  std::string proxy_key = "\"" + proxy_name + "\":";
+  size_t proxy_pos = json.find(proxy_key);
+  if (proxy_pos == std::string::npos) {
+    return false;
+  }
+  size_t value_start = json.find('{', proxy_pos + proxy_key.length());
+  if (value_start == std::string::npos) {
+    return false;
+  }
+  int brace_depth = 1;
+  size_t value_end = value_start + 1;
+  bool in_quotes = false;
+  while (value_end < json.length() && brace_depth > 0) {
+    char c = json[value_end];
+    if (c == '"' && json[value_end - 1] != '\\') {
+      in_quotes = !in_quotes;
+    }
+    if (!in_quotes) {
+      if (c == '{') {
+        brace_depth++;
+      } else if (c == '}') {
+        brace_depth--;
+      }
+    }
+    value_end++;
+  }
+  if (brace_depth != 0) {
+    return false;
+  }
+  *object_start = value_start;
+  *object_end = value_end;
+  return true;
+}
+
+std::string BuildSelectedProxyInfoStr(
+    const std::string& json,
+    const std::string& group_name) {
+  const std::string selected_name = FindSelectedProxyNameFromJson(json, group_name);
+  if (selected_name.empty()) {
+    return "";
+  }
+  size_t object_start = 0;
+  size_t object_end = 0;
+  if (!FindProxyObjectRange(json, selected_name, &object_start, &object_end)) {
+    return selected_name + "|Unknown|Unknown|false";
+  }
+  std::string type = ExtractJsonStringField(json, object_start, object_end, "type");
+  std::string country = ExtractJsonStringField(json, object_start, object_end, "country");
+  std::string udp = ExtractJsonLiteralField(json, object_start, object_end, "udp");
+  if (type.empty()) {
+    type = "Unknown";
+  }
+  if (country.empty()) {
+    country = "Unknown";
+  }
+  if (udp.empty()) {
+    udp = "false";
+  }
+  return selected_name + "|" + type + "|" + country + "|" + udp;
+}
+
 std::string ReadLastError() {
   if (g_api.last_error == nullptr) {
     return "";
@@ -165,6 +297,8 @@ std::mutex g_traffic_mutex;
 std::condition_variable g_traffic_cv;
 flutter::EncodableMap g_pending_traffic_data;
 bool g_has_pending_traffic = false;
+std::optional<int64_t> g_last_traffic_up;
+std::optional<int64_t> g_last_traffic_down;
 
 void StopTrafficMonitor() {
   g_traffic_monitor_active = false;
@@ -172,6 +306,8 @@ void StopTrafficMonitor() {
   if (g_traffic_thread.joinable()) {
     g_traffic_thread.join();
   }
+  g_last_traffic_up.reset();
+  g_last_traffic_down.reset();
 }
 
 void StartTrafficMonitor() {
@@ -186,18 +322,26 @@ void StartTrafficMonitor() {
       if (EnsureMihomoApi()) {
         const auto up = static_cast<int64_t>(g_api.traffic_up());
         const auto down = static_cast<int64_t>(g_api.traffic_down());
-        
-        {
-          std::lock_guard<std::mutex> lock(g_traffic_mutex);
-          g_pending_traffic_data = flutter::EncodableMap{
-            {flutter::EncodableValue("up"), flutter::EncodableValue(up)},
-            {flutter::EncodableValue("down"), flutter::EncodableValue(down)}
-          };
-          g_has_pending_traffic = true;
-        }
 
-        if (g_main_window_handle) {
-           PostMessage(g_main_window_handle, WM_TRAFFIC_UPDATE, 0, 0);
+        const bool changed =
+            !g_last_traffic_up.has_value() || !g_last_traffic_down.has_value() ||
+            g_last_traffic_up.value() != up || g_last_traffic_down.value() != down;
+        if (changed) {
+          g_last_traffic_up = up;
+          g_last_traffic_down = down;
+
+          {
+            std::lock_guard<std::mutex> lock(g_traffic_mutex);
+            g_pending_traffic_data = flutter::EncodableMap{
+              {flutter::EncodableValue("up"), flutter::EncodableValue(up)},
+              {flutter::EncodableValue("down"), flutter::EncodableValue(down)}
+            };
+            g_has_pending_traffic = true;
+          }
+
+          if (g_main_window_handle) {
+             PostMessage(g_main_window_handle, WM_TRAFFIC_UPDATE, 0, 0);
+          }
         }
       }
       
@@ -512,6 +656,7 @@ bool FlutterWindow::OnCreate() {
   // Setup MethodChannel for Mihomo
   static std::unique_ptr<flutter::MethodChannel<>> mihomo_channel;
   static std::unique_ptr<flutter::MethodChannel<>> security_channel;
+  static std::unique_ptr<flutter::MethodChannel<>> hot_update_channel;
   static std::unique_ptr<flutter::EventChannel<>> traffic_channel;
 
   mihomo_channel = std::make_unique<flutter::MethodChannel<>>(
@@ -519,6 +664,9 @@ bool FlutterWindow::OnCreate() {
       &flutter::StandardMethodCodec::GetInstance());
   security_channel = std::make_unique<flutter::MethodChannel<>>(
       flutter_controller_->engine()->messenger(), "com.accelerator.tg/security",
+      &flutter::StandardMethodCodec::GetInstance());
+  hot_update_channel = std::make_unique<flutter::MethodChannel<>>(
+      flutter_controller_->engine()->messenger(), "com.accelerator.tg/hot_update",
       &flutter::StandardMethodCodec::GetInstance());
 
   traffic_channel = std::make_unique<flutter::EventChannel<>>(
@@ -529,9 +677,7 @@ bool FlutterWindow::OnCreate() {
   security_channel->SetMethodCallHandler(
       [](const flutter::MethodCall<>& call,
          std::unique_ptr<flutter::MethodResult<>> result) {
-        if (call.method_name() == "enableSecureMode") {
-          result->Success(flutter::EncodableValue(true));
-        } else if (call.method_name() == "isDebuggerAttached") {
+        if (call.method_name() == "isDebuggerAttached") {
           BOOL remote_debugger = FALSE;
           CheckRemoteDebuggerPresent(GetCurrentProcess(), &remote_debugger);
           const bool attached = IsDebuggerPresent() || remote_debugger == TRUE;
@@ -556,6 +702,22 @@ bool FlutterWindow::OnCreate() {
           const bool detected = (status == ERROR_SUCCESS && proxy_enabled == 1 && !loopback_proxy) ||
                                 http_proxy || https_proxy;
           result->Success(flutter::EncodableValue(detected));
+        } else {
+          result->NotImplemented();
+        }
+      });
+
+  hot_update_channel->SetMethodCallHandler(
+      [](const flutter::MethodCall<>& call,
+         std::unique_ptr<flutter::MethodResult<>> result) {
+        if (call.method_name() == "restartApp") {
+          const bool restarted = RelaunchCurrentExecutable();
+          if (!restarted) {
+            result->Error("RESTART_FAILED", "Failed to relaunch executable", nullptr);
+            return;
+          }
+          result->Success(flutter::EncodableValue(true));
+          PostQuitMessage(0);
         } else {
           result->NotImplemented();
         }
@@ -802,6 +964,21 @@ bool FlutterWindow::OnCreate() {
                  return;
              }
              result->Success(flutter::EncodableValue(json.substr(value_start, value_end - value_start)));
+         } else if (call.method_name() == "getSelectedProxyInfoSync") {
+            if (!EnsureMihomoApi()) {
+              result->Success(flutter::EncodableValue(""));
+              return;
+            }
+            std::string group_name = GetStringArg(call, "groupName");
+            if (group_name.empty()) group_name = "GLOBAL";
+            std::string json = TakeCString(g_api.get_proxies());
+            if (json.empty()) {
+              result->Success(flutter::EncodableValue(""));
+              return;
+            }
+            result->Success(
+                flutter::EncodableValue(
+                    BuildSelectedProxyInfoStr(json, group_name)));
           } else if (call.method_name() == "getProxyListStr") {
             if (!EnsureMihomoApi()) {
               result->Error("GET_PROXIES_FAILED", "Mihomo API unavailable", nullptr);

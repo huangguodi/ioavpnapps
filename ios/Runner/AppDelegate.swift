@@ -16,6 +16,12 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   private var sink: FlutterEventSink?
   private var timer: Timer?
   private let fetch: (@escaping ([String: Any]) -> Void) -> Void
+  private var lastSnapshot: [String: Int64]?
+  private var unchangedTickCount = 0
+
+  private let activeInterval: TimeInterval = 1.0
+  private let idleInterval: TimeInterval = 1.8
+  private let inactiveInterval: TimeInterval = 3.0
 
   init(fetch: @escaping (@escaping ([String: Any]) -> Void) -> Void) {
     self.fetch = fetch
@@ -23,16 +29,9 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 
   func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
     sink = events
-    timer?.invalidate()
-    timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-      guard let self else { return }
-      self.fetch { data in
-        guard let sink = self.sink else { return }
-        DispatchQueue.main.async {
-          sink(data)
-        }
-      }
-    }
+    lastSnapshot = nil
+    unchangedTickCount = 0
+    scheduleNextTick(after: 0.15)
     return nil
   }
 
@@ -42,21 +41,77 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     sink = nil
     return nil
   }
+
+  private func scheduleNextTick(after interval: TimeInterval) {
+    timer?.invalidate()
+    guard sink != nil else { return }
+    timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) {
+      [weak self] _ in
+      self?.performTick()
+    }
+  }
+
+  private func performTick() {
+    guard sink != nil else { return }
+    fetch { [weak self] data in
+      guard let self, let sink = self.sink else { return }
+      let snapshot = self.snapshot(from: data)
+      let didChange = snapshot != self.lastSnapshot
+      if didChange {
+        self.lastSnapshot = snapshot
+        self.unchangedTickCount = 0
+      } else {
+        self.unchangedTickCount += 1
+      }
+
+      if didChange || self.unchangedTickCount == 0 || self.unchangedTickCount % 3 == 0 {
+        DispatchQueue.main.async {
+          sink(data)
+        }
+      }
+      self.scheduleNextTick(after: self.nextInterval(didChange: didChange))
+    }
+  }
+
+  private func nextInterval(didChange: Bool) -> TimeInterval {
+    if UIApplication.shared.applicationState != .active {
+      return inactiveInterval
+    }
+    if didChange || unchangedTickCount < 3 {
+      return activeInterval
+    }
+    return idleInterval
+  }
+
+  private func snapshot(from data: [String: Any]) -> [String: Int64] {
+    [
+      "up": data["up"] as? Int64 ?? Int64(data["up"] as? Int ?? 0),
+      "down": data["down"] as? Int64 ?? Int64(data["down"] as? Int ?? 0),
+      "totalUp": data["totalUp"] as? Int64 ?? Int64(data["totalUp"] as? Int ?? 0),
+      "totalDown": data["totalDown"] as? Int64 ?? Int64(data["totalDown"] as? Int ?? 0),
+    ]
+  }
 }
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
-  private let tunnelBundleIdentifier = "app.celery7240.capricorn2328.PacketTunnel"
+  private let tunnelBundleIdentifier = "com.xiangyu.clash.packettunnel"
   private let tunnelDescription = "CarbonLAM Tunnel"
-  private let appGroupIdentifier = "group.25632c4e368be58f.1"
+  private let appGroupIdentifier = "group.com.xiangyu.clash"
   private var trafficStreamHandler: TunnelTrafficStreamHandler?
   private var channelsConfigured = false
+  private var cachedTunnelManager: NETunnelProviderManager?
+  private var isLoadingTunnelManager = false
+  private var pendingTunnelManagerCompletions: [(NETunnelProviderManager?, Error?) -> Void] = []
+  private let postStartStatusQueryDelay: TimeInterval = 1.2
+  private var deferStatusQueriesUntil: Date?
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     configureChannelsIfNeeded()
+    primeTunnelManagerCache()
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
@@ -96,6 +151,8 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
                                              binaryMessenger: controller.binaryMessenger)
     let securityChannel = FlutterMethodChannel(name: "com.accelerator.tg/security",
                                                binaryMessenger: controller.binaryMessenger)
+    let hotUpdateChannel = FlutterMethodChannel(name: "com.accelerator.tg/hot_update",
+                                                binaryMessenger: controller.binaryMessenger)
     let handler = TunnelTrafficStreamHandler { completion in
       self.sendProviderCommand(["action": "getTraffic"]) { resp in
         let up = resp["up"] as? Int64 ?? Int64(resp["up"] as? Int ?? 0)
@@ -112,9 +169,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     trafficChannel.setStreamHandler(handler)
     securityChannel.setMethodCallHandler({
       (call: FlutterMethodCall, result: @escaping FlutterResult) -> Void in
-      if call.method == "enableSecureMode" {
-        result(true)
-      } else if call.method == "isDebuggerAttached" {
+      if call.method == "isDebuggerAttached" {
         result(self.isDebuggerAttached())
       } else if call.method == "isAppDebuggable" {
         #if DEBUG
@@ -131,6 +186,17 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
         result(FlutterMethodNotImplemented)
       }
     })
+    hotUpdateChannel.setMethodCallHandler({
+      (call: FlutterMethodCall, result: @escaping FlutterResult) -> Void in
+      if call.method == "restartApp" {
+        result(true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+          exit(0)
+        }
+      } else {
+        result(FlutterMethodNotImplemented)
+      }
+    })
     channel.setMethodCallHandler({
       (call: FlutterMethodCall, result: @escaping FlutterResult) -> Void in
       if call.method == "initAssets" {
@@ -138,7 +204,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       } else if call.method == "requestVpnPermission" {
           self.requestTunnelPermission { error in
             if let error = error {
-              result(FlutterError(code: "VPN_PERMISSION_DENIED", message: error.localizedDescription, details: nil))
+              result(FlutterError(code: "VPN_PERMISSION_DENIED", message: self.describeError(error), details: nil))
             } else {
               result(true)
             }
@@ -158,7 +224,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           let configContent = (args["configContent"] as? String) ?? (try? String(contentsOfFile: configPath)) ?? ""
           self.startTunnel(configContent: configContent) { error in
             if let error = error {
-              result(FlutterError(code: "START_FAILED", message: error.localizedDescription, details: nil))
+              result(FlutterError(code: "START_FAILED", message: self.describeError(error), details: nil))
             } else {
               result(nil)
             }
@@ -179,18 +245,19 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             result((resp["ok"] as? Bool) ?? false)
           }
       } else if call.method == "getMode" || call.method == "getModeNative" {
-          self.sendProviderCommand(["action": "getMode"]) { resp in
-            result((resp["value"] as? String) ?? "rule")
+          self.sendProviderStringMessage("getMode") { value in
+            let mode = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            result((mode?.isEmpty ?? true) ? "rule" : mode)
           }
       } else if call.method == "getProxies" {
-          self.sendProviderCommand(["action": "getProxies"]) { resp in
-            result((resp["value"] as? String) ?? "{}")
+          self.sendProviderStringMessage("getProxies") { value in
+            result(value ?? "{}")
           }
       } else if call.method == "urlTest" {
           let args = call.arguments as? [String: Any]
           let name = (args?["name"] as? String ?? "GLOBAL")
-          self.sendProviderCommand(["action": "urlTest", "name": name]) { resp in
-            result((resp["value"] as? String) ?? "")
+          self.sendProviderStringMessage("urlTest|\(name)") { value in
+            result(value ?? "")
           }
       } else if call.method == "selectProxy" {
           let args = call.arguments as? [String: Any]
@@ -220,9 +287,9 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             result(FlutterError(code: "INVALID_ARGUMENT", message: "groupName required", details: nil))
             return
           }
-          self.sendProviderCommand(["action": "getProxies"]) { resp in
-            let raw = (resp["value"] as? String) ?? "{}"
-            result(self.extractSelectedProxy(groupName: group, proxiesJson: raw))
+          self.sendProviderStringMessage("getSelectedProxy|\(group)") { value in
+            let selected = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            result((selected?.isEmpty ?? true) ? nil : selected)
           }
       } else if call.method == "reloadConfig" {
           self.sendProviderCommand(["action": "reloadConfig"]) { resp in
@@ -245,18 +312,93 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     return (info.kp_proc.p_flag & P_TRACED) != 0
   }
 
-  private func extractSelectedProxy(groupName: String, proxiesJson: String) -> String? {
-    guard let data = proxiesJson.data(using: .utf8) else { return nil }
-    guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-    guard let proxies = root["proxies"] as? [String: Any] else { return nil }
-    guard let group = proxies[groupName] as? [String: Any] else { return nil }
-    return group["now"] as? String
+  private func primeTunnelManagerCache() {
+    loadTunnelManager(forceRefresh: true) { _, _ in }
   }
 
-  private func loadTunnelManager(completion: @escaping (NETunnelProviderManager?, Error?) -> Void) {
+  private func markPostStartStatusDelay() {
+    deferStatusQueriesUntil = Date().addingTimeInterval(postStartStatusQueryDelay)
+  }
+
+  private func performAfterPostStartDelayIfNeeded(
+    method: String,
+    execute: @escaping () -> Void
+  ) {
+    guard
+      let until = deferStatusQueriesUntil,
+      until.timeIntervalSinceNow > 0,
+      method == "getMode" || method == "getProxies" || method == "getSelectedProxy"
+    else {
+      execute()
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + until.timeIntervalSinceNow) {
+      execute()
+    }
+  }
+
+  private func completeTunnelManagerLoad(
+    manager: NETunnelProviderManager?,
+    error: Error?,
+  ) {
+    let completions = pendingTunnelManagerCompletions
+    pendingTunnelManagerCompletions.removeAll()
+    for completion in completions {
+      completion(manager, error)
+    }
+  }
+
+  private func sendProviderStringMessage(_ message: String, completion: @escaping (String?) -> Void) {
+    let method: String
+    if let separator = message.firstIndex(of: "|") {
+      method = String(message[..<separator])
+    } else {
+      method = message
+    }
+    performAfterPostStartDelayIfNeeded(method: method) {
+      self.loadTunnelManager { manager, _ in
+        guard
+          let session = manager?.connection as? NETunnelProviderSession,
+          let data = message.data(using: .utf8)
+        else {
+          completion(nil)
+          return
+        }
+        do {
+          try session.sendProviderMessage(data) { responseData in
+            guard
+              let responseData = responseData,
+              let value = String(data: responseData, encoding: .utf8)
+            else {
+              completion(nil)
+              return
+            }
+            completion(value)
+          }
+        } catch {
+          completion(nil)
+        }
+      }
+    }
+  }
+
+  private func loadTunnelManager(
+    forceRefresh: Bool = false,
+    completion: @escaping (NETunnelProviderManager?, Error?) -> Void,
+  ) {
+    if !forceRefresh, let cachedTunnelManager {
+      completion(cachedTunnelManager, nil)
+      return
+    }
+    pendingTunnelManagerCompletions.append(completion)
+    if isLoadingTunnelManager {
+      return
+    }
+    isLoadingTunnelManager = true
     NETunnelProviderManager.loadAllFromPreferences { managers, error in
+      self.isLoadingTunnelManager = false
       if let error = error {
-        completion(nil, error)
+        self.completeTunnelManagerLoad(manager: nil, error: error)
         return
       }
       let matched = managers?.first(where: { manager in
@@ -267,11 +409,9 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
         }
         return manager.localizedDescription == self.tunnelDescription
       })
-      if let manager = matched {
-        completion(manager, nil)
-      } else {
-        completion(NETunnelProviderManager(), nil)
-      }
+      let manager = matched ?? NETunnelProviderManager()
+      self.cachedTunnelManager = manager
+      self.completeTunnelManagerLoad(manager: manager, error: nil)
     }
   }
 
@@ -299,14 +439,15 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 
       manager.saveToPreferences { saveError in
         if let saveError = saveError {
-          completion(saveError)
+          completion(self.wrapError(stage: "saveToPreferences", error: saveError))
           return
         }
         manager.loadFromPreferences { loadError in
           if let loadError = loadError {
-            completion(loadError)
+            completion(self.wrapError(stage: "loadFromPreferences", error: loadError))
             return
           }
+          self.cachedTunnelManager = manager
           do {
             guard let session = manager.connection as? NETunnelProviderSession else {
               completion(NSError(domain: "Tunnel", code: -3, userInfo: [NSLocalizedDescriptionKey: "invalid tunnel session"]))
@@ -315,7 +456,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             try session.startVPNTunnel()
             self.waitTunnelConnected(manager: manager, retries: 8, completion: completion)
           } catch {
-            completion(error)
+            completion(self.wrapError(stage: "startVPNTunnel", error: error))
           }
         }
       }
@@ -325,6 +466,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   private func waitTunnelConnected(manager: NETunnelProviderManager, retries: Int, completion: @escaping (Error?) -> Void) {
     let status = manager.connection.status
     if status == .connected || status == .reasserting {
+      markPostStartStatusDelay()
       completion(nil)
       return
     }
@@ -339,6 +481,20 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
       self?.waitTunnelConnected(manager: manager, retries: retries - 1, completion: completion)
     }
+  }
+
+  private func describeError(_ error: Error) -> String {
+    let nsError = error as NSError
+    return "[\(nsError.domain):\(nsError.code)] \(nsError.localizedDescription)"
+  }
+
+  private func wrapError(stage: String, error: Error) -> NSError {
+    let nsError = error as NSError
+    return NSError(
+      domain: nsError.domain,
+      code: nsError.code,
+      userInfo: [NSLocalizedDescriptionKey: "\(stage) failed: \(nsError.localizedDescription)"]
+    )
   }
 
   private func requestTunnelPermission(completion: @escaping (Error?) -> Void) {
@@ -362,11 +518,16 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       manager.isEnabled = true
       manager.saveToPreferences { saveError in
         if let saveError = saveError {
-          completion(saveError)
+          completion(self.wrapError(stage: "permission.saveToPreferences", error: saveError))
           return
         }
         manager.loadFromPreferences { loadError in
-          completion(loadError)
+          if let loadError = loadError {
+            completion(self.wrapError(stage: "permission.loadFromPreferences", error: loadError))
+          } else {
+            self.cachedTunnelManager = manager
+            completion(nil)
+          }
         }
       }
     }

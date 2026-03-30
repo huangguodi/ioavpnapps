@@ -17,5 +17,5 @@ String formatSpeed(dynamic bytes) {
   const suffixes = ["B/s", "KB/s", "MB/s", "GB/s"];
   var i = (log(b) / log(1024)).floor();
   if (i >= suffixes.length) i = suffixes.length - 1;
-  return ((b / pow(1024, i)).toStringAsFixed(1)) + " " + suffixes[i];
+  return "${(b / pow(1024, i)).toStringAsFixed(1)} ${suffixes[i]}";
 }

@@ -9,15 +9,27 @@ import 'package:app/view_models/home_view_model.dart';
 import 'package:app/services/mihomo_service.dart';
 
 class NodeSelector extends StatelessWidget {
+  static const int _latencyTestBatchSize = 4;
+  static const Duration _latencyTestBatchPause = Duration(milliseconds: 120);
+
   const NodeSelector({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<HomeViewModel>(
-      builder: (context, viewModel, child) {
-        final nodeName = viewModel.globalNodeName;
-        final nodeType = viewModel.globalNodeType.toUpperCase();
-        
+    return Selector<HomeViewModel, (String, String, String, bool)>(
+      selector: (_, vm) => (
+        vm.globalNodeName,
+        vm.globalNodeType,
+        vm.globalNodeCountry,
+        vm.globalNodeUdp,
+      ),
+      builder: (context, nodeState, child) {
+        final nodeName = nodeState.$1;
+        final nodeType = nodeState.$2.toUpperCase();
+        final nodeCountry = nodeState.$3;
+        final nodeUdp = nodeState.$4;
+        final viewModel = context.read<HomeViewModel>();
+
         return Material(
           color: Colors.transparent,
           child: InkWell(
@@ -33,7 +45,7 @@ class NodeSelector extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  _buildCountryIcon(viewModel.globalNodeCountry),
+                  _buildCountryIcon(nodeCountry),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Row(
@@ -52,7 +64,7 @@ class NodeSelector extends StatelessWidget {
                         ),
                         const SizedBox(width: 8),
                         _buildNodeTag(nodeType),
-                        if (viewModel.globalNodeUdp) ...[
+                        if (nodeUdp) ...[
                           const SizedBox(width: 6),
                           _buildNodeTag('UDP'),
                         ],
@@ -64,7 +76,10 @@ class NodeSelector extends StatelessWidget {
                     AppAssets.icChevronRight,
                     width: 16,
                     height: 16,
-                    colorFilter: const ColorFilter.mode(Colors.white70, BlendMode.srcIn),
+                    colorFilter: const ColorFilter.mode(
+                      Colors.white70,
+                      BlendMode.srcIn,
+                    ),
                   ),
                 ],
               ),
@@ -170,12 +185,10 @@ class NodeSelector extends StatelessWidget {
   }
 
   Future<void> _showNodeSelectorSheet(BuildContext context, HomeViewModel viewModel) async {
-    final proxies = await MihomoService().getProxies();
-    final nodes = await viewModel.getNodeList(); // Actually getNodeList calls getProxies too, optimizing?
-    // Let's use viewModel.getNodeList() but we might need proxies map for current selection?
-    // viewModel.getNodeList already does extraction.
-    // But to know which one is currently selected in the list (if name matches), we rely on viewModel.globalNodeName
-    // OR we fetch fresh info.
+    final cachedProxies = MihomoService().cachedProxies;
+    final hasWarmCache = cachedProxies != null && cachedProxies.isNotEmpty;
+    final proxies = cachedProxies ?? await MihomoService().getProxies(forceRefresh: true);
+    final nodes = viewModel.getNodeListFromProxies(proxies);
     
     if (!context.mounted || nodes.isEmpty) return;
     
@@ -192,12 +205,88 @@ class NodeSelector extends StatelessWidget {
         var items = List<Map<String, dynamic>>.from(nodes);
         var isTestingAll = false;
         var switchingNodeName = '';
+        var isRefreshingNodes = false;
         var activeNodeName = currentNodeName;
+        var hasScheduledRefresh = false;
         
         return FractionallySizedBox(
           heightFactor: 0.75,
           child: StatefulBuilder(
             builder: (context, modalSetState) {
+              Future<void> refreshNodesFromSource() async {
+                if (!hasWarmCache || isRefreshingNodes) {
+                  return;
+                }
+                modalSetState(() => isRefreshingNodes = true);
+                try {
+                  final freshProxies = await MihomoService().getProxies(forceRefresh: true);
+                  final freshNodes = viewModel.getNodeListFromProxies(freshProxies);
+                  if (!context.mounted || freshNodes.isEmpty) {
+                    return;
+                  }
+                  final freshCurrentNodeName = viewModel.getCurrentGlobalNodeName(freshProxies);
+                  modalSetState(() {
+                    items = List<Map<String, dynamic>>.from(freshNodes);
+                    activeNodeName = freshCurrentNodeName;
+                  });
+                } finally {
+                  if (context.mounted) {
+                    modalSetState(() => isRefreshingNodes = false);
+                  }
+                }
+              }
+
+              Future<void> runBatchLatencyTests() async {
+                modalSetState(() => isTestingAll = true);
+                try {
+                  for (var start = 0; start < items.length; start += _latencyTestBatchSize) {
+                    if (!context.mounted) {
+                      return;
+                    }
+                    final end = (start + _latencyTestBatchSize > items.length)
+                        ? items.length
+                        : start + _latencyTestBatchSize;
+                    final batchResults = await Future.wait(
+                      [
+                        for (var i = start; i < end; i++)
+                          () async {
+                            final name = items[i]['name'] as String;
+                            final delay = await viewModel.testNodeLatency(name);
+                            return (index: i, delay: delay);
+                          }(),
+                      ],
+                    );
+                    if (!context.mounted) {
+                      return;
+                    }
+                    modalSetState(() {
+                      for (final result in batchResults) {
+                        items[result.index] = {
+                          ...items[result.index],
+                          'delay': result.delay,
+                        };
+                      }
+                    });
+                    if (end < items.length) {
+                      await Future.delayed(_latencyTestBatchPause);
+                    }
+                  }
+                } finally {
+                  if (context.mounted) {
+                    modalSetState(() => isTestingAll = false);
+                  }
+                }
+              }
+
+              if (hasWarmCache && !hasScheduledRefresh) {
+                hasScheduledRefresh = true;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (context.mounted) {
+                    refreshNodesFromSource();
+                  }
+                });
+              }
+
               return Container(
                 decoration: BoxDecoration(
                   color: AppColors.cardBackground,
@@ -233,26 +322,7 @@ class NodeSelector extends StatelessWidget {
                               ),
                             ),
                             TextButton.icon(
-                              onPressed: isTestingAll
-                                  ? null
-                                  : () async {
-                                      modalSetState(() => isTestingAll = true);
-                                      for (var i = 0; i < items.length; i++) {
-                                        if (!context.mounted) break;
-                                        final name = items[i]['name'] as String;
-                                        final delay = await viewModel.testNodeLatency(name);
-                                        if (!context.mounted) break;
-                                        modalSetState(() {
-                                          items[i] = {
-                                            ...items[i],
-                                            'delay': delay,
-                                          };
-                                        });
-                                      }
-                                      if (context.mounted) {
-                                        modalSetState(() => isTestingAll = false);
-                                      }
-                                    },
+                              onPressed: isRefreshingNodes || isTestingAll ? null : runBatchLatencyTests,
                               icon: isTestingAll
                                   ? const SizedBox(
                                       width: 14,
@@ -260,12 +330,32 @@ class NodeSelector extends StatelessWidget {
                                       child: CircularProgressIndicator(strokeWidth: 2),
                                     )
                                   : const Icon(Icons.speed, size: 16),
-                              label: Text(isTestingAll ? '' : ''),
+                              label: const Text(''),
                               style: TextButton.styleFrom(
                                 foregroundColor: Colors.white,
                                 backgroundColor: Colors.white.withValues(alpha: 0.12),
                               ),
                             ),
+                            if (hasWarmCache) ...[
+                              const SizedBox(width: 8),
+                              TextButton.icon(
+                                onPressed: isTestingAll || isRefreshingNodes
+                                    ? null
+                                    : refreshNodesFromSource,
+                                icon: isRefreshingNodes
+                                    ? const SizedBox(
+                                        width: 14,
+                                        height: 14,
+                                        child: CircularProgressIndicator(strokeWidth: 2),
+                                      )
+                                    : const Icon(Icons.refresh, size: 16),
+                                label: const Text(''),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: Colors.white,
+                                  backgroundColor: Colors.white.withValues(alpha: 0.12),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -316,7 +406,12 @@ class NodeSelector extends StatelessWidget {
                                         switchingNodeName = nodeName;
                                       });
                                       
-                                      final switched = await viewModel.selectGlobalNode(nodeName);
+                                      final switched = await viewModel.selectGlobalNode(
+                                        nodeName,
+                                        nodeType: node['type'] as String,
+                                        nodeCountry: nodeCountry,
+                                        nodeUdp: nodeUdp,
+                                      );
                                       
                                       if (!context.mounted) return;
                                       if (switched) {

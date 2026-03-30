@@ -2,6 +2,7 @@ package com.accelerator.tg
 
 import android.util.Log
 import mobile.Mobile
+import org.json.JSONObject
 
 object MihomoManager {
     private const val TAG = "MihomoManager"
@@ -182,6 +183,32 @@ object MihomoManager {
             proxiesJson.substring(valueStart + 1, valueEnd)
         } catch (e: Throwable) {
             Log.e(TAG, "getSelectedProxy failed group=$groupName", e)
+            null
+        }
+    }
+
+    fun getSelectedProxyInfo(groupName: String): Map<String, Any>? {
+        return try {
+            val proxiesJson = Mobile.getProxies()
+            val root = JSONObject(proxiesJson)
+            val proxies = root.optJSONObject("proxies") ?: return null
+            val group = proxies.optJSONObject(groupName) ?: return null
+            val selectedName = group.optString("now").trim()
+            if (selectedName.isEmpty()) {
+                return null
+            }
+            val node = proxies.optJSONObject(selectedName)
+            val type = node?.optString("type")?.trim().orEmpty().ifEmpty { "Unknown" }
+            val country = node?.optString("country")?.trim().orEmpty().ifEmpty { "Unknown" }
+            val udp = node?.optBoolean("udp", false) ?: false
+            mapOf(
+                "name" to selectedName,
+                "type" to type,
+                "country" to country,
+                "udp" to udp,
+            )
+        } catch (e: Throwable) {
+            Log.e(TAG, "getSelectedProxyInfo failed group=$groupName", e)
             null
         }
     }

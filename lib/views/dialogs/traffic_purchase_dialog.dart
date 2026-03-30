@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:app/core/constants.dart';
 import 'package:app/services/api_service.dart';
+import 'package:app/view_models/home_view_model.dart';
+import 'package:app/views/dialogs/redeem_key_dialog.dart';
 import 'package:app/views/widgets/custom_dialog.dart';
 
 class TrafficPackageOption {
@@ -48,14 +51,15 @@ const List<TrafficPackageOption> _trafficPackages = [
 
 class TrafficPurchaseDialog {
   static Future<void> show(BuildContext context) {
+    final hostContext = context;
     return showGeneralDialog(
-      context: context,
+      context: hostContext,
       barrierDismissible: true,
       barrierLabel: 'traffic_purchase',
       barrierColor: Colors.black.withValues(alpha: 0.25),
       transitionDuration: const Duration(milliseconds: 220),
       pageBuilder: (context, animation, secondaryAnimation) {
-        return const _TrafficPurchaseDialogContent();
+        return _TrafficPurchaseDialogContent(hostContext: hostContext);
       },
       transitionBuilder: (context, animation, secondaryAnimation, child) {
         final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
@@ -75,7 +79,9 @@ class TrafficPurchaseDialog {
 }
 
 class _TrafficPurchaseDialogContent extends StatefulWidget {
-  const _TrafficPurchaseDialogContent();
+  final BuildContext hostContext;
+
+  const _TrafficPurchaseDialogContent({required this.hostContext});
 
   @override
   State<_TrafficPurchaseDialogContent> createState() => _TrafficPurchaseDialogContentState();
@@ -126,7 +132,25 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                         ),
                       ),
                       const Spacer(),
-                      const SizedBox(width: 24, height: 24),
+                      GestureDetector(
+                        onTap: () {
+                          RedeemKeyDialog.show(
+                            widget.hostContext,
+                            onRedeemed: () => widget.hostContext
+                                .read<HomeViewModel>()
+                                .refreshUserInfo(),
+                          );
+                        },
+                        child: SvgPicture.asset(
+                          AppAssets.icRedeem,
+                          width: 24,
+                          height: 24,
+                          colorFilter: const ColorFilter.mode(
+                            Colors.white,
+                            BlendMode.srcIn,
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -149,12 +173,12 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                         ),
                         const SizedBox(height: 4),
                         const Text(
-                          '节点采用 CN2 GIA + BGP 智能多线高端骨干网络承载，智能优化回国线路，无普通线路\n无劣质中转线路、无超售拥堵\n为你带来超低级延迟体验\n\n购买 1000GB(￥89.99)的流量包套餐\n可联系客服开通专属的独享节点',
+                          '节点采用 CN2 GIA + BGP 智能多线高端骨干网络承载，智能优化回国线路，无普通线路\n无劣质中转线路、无超售拥堵\n为你带来超低级延迟体验\n\n购买 1000GB(￥89.99)的流量包套餐\n首页左上角联系客服开通独享节点',
                           textAlign: TextAlign.center,
                           style: TextStyle(
                             color: Colors.white70,
                             fontSize: 12,
-                            height: 1.5,
+                            height: 1.3,
                             fontWeight: FontWeight.w500,
                           ),
                         ),
@@ -187,7 +211,7 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                             ),
                           ],
                         ),
-                        const SizedBox(height: 16),
+                        const SizedBox(height: 12),
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton(
@@ -255,10 +279,10 @@ class _TrafficPurchaseDialogContentState extends State<_TrafficPurchaseDialogCon
                             ),
                           ),
                         ),
-                        const SizedBox(height: 8),
+                        const SizedBox(height: 6),
                         const Center(
                           child: Text(
-                            '购买后立即生效，流量包自动叠加\n疑问咨询：联系群主或您的推荐人\n投诉/退款/售后：通过APP内官方客服页面',
+                            '购买后立即生效，流量包自动叠加\n疑问咨询：联系群主或您的推荐人\n投诉/退款/售后：首页左上角联系客服图标\n卡密兑换：右上角兑换图标',
                             textAlign: TextAlign.center,
                             style: TextStyle(
                               color: Colors.white54,

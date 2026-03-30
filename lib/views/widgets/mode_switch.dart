@@ -28,11 +28,7 @@ class _ModeSwitchState extends State<ModeSwitch> with SingleTickerProviderStateM
       vsync: this,
       duration: const Duration(milliseconds: 300),
     );
-    // Initialize with a dummy animation
     _bounceAnimation = Tween<double>(begin: 0, end: 0).animate(_bounceController);
-    _bounceController.addListener(() {
-      setState(() {});
-    });
   }
 
   @override
@@ -45,8 +41,6 @@ class _ModeSwitchState extends State<ModeSwitch> with SingleTickerProviderStateM
     double currentVal = _getAlignmentValue(widget.mode);
     double targetVal = _getAlignmentValue(targetMode);
     double distance = targetVal - currentVal;
-    
-    // 弹动幅度：移动到目标的 30% 处然后弹回
     double peakOffset = distance * 0.3;
     
     _bounceAnimation = TweenSequence<double>([
@@ -83,9 +77,7 @@ class _ModeSwitchState extends State<ModeSwitch> with SingleTickerProviderStateM
   }
 
   Alignment _getAlignment() {
-    // 基础对齐值
     double base = _getAlignmentValue(widget.mode);
-    // 如果正在动画中，加上偏移量
     return Alignment(base + (_bounceController.isAnimating ? _bounceAnimation.value : 0.0), 0.0);
   }
 
@@ -122,123 +114,130 @@ class _ModeSwitchState extends State<ModeSwitch> with SingleTickerProviderStateM
         return Stack(
           alignment: Alignment.center,
           children: [
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              width: switchWidth,
-              height: switchHeight,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                color: AppColors.cardBackground,
-                border: Border.all(
-                  color: widget.mode == ConnectionMode.off
-                      ? Colors.white.withValues(alpha: 0.1)
-                      : _getModeColor(),
-                  width: 2,
-                ),
-                boxShadow: widget.mode != ConnectionMode.off
-                    ? [
-                        BoxShadow(
-                          color: _getModeColor().withValues(alpha: 0.3),
-                          blurRadius: 20,
-                          spreadRadius: 2,
-                        )
-                      ]
-                    : [],
-              ),
-              child: Stack(
-                children: [
-                  Center(
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.translucent,
-                            onTap: () => _handleTap(ConnectionMode.off),
-                            child: Center(
-                              child: Text(
-                                AppStrings.modeOff,
-                                style: TextStyle(
-                                  color: widget.mode == ConnectionMode.off
-                                      ? Colors.white
-                                      : Colors.white.withValues(alpha: 0.3),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.translucent,
-                            onTap: () => _handleTap(ConnectionMode.smart),
-                            child: Center(
-                              child: Text(
-                                AppStrings.modeSmart,
-                                style: TextStyle(
-                                  color: widget.mode == ConnectionMode.smart
-                                      ? Colors.white
-                                      : Colors.white.withValues(alpha: 0.3),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                        Expanded(
-                          child: GestureDetector(
-                            behavior: HitTestBehavior.translucent,
-                            onTap: () => _handleTap(ConnectionMode.global),
-                            child: Center(
-                              child: Text(
-                                AppStrings.modeGlobal,
-                                style: TextStyle(
-                                  color: widget.mode == ConnectionMode.global
-                                      ? Colors.white
-                                      : Colors.white.withValues(alpha: 0.3),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
+            AnimatedBuilder(
+              animation: _bounceController,
+              builder: (context, child) {
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 300),
+                  width: switchWidth,
+                  height: switchHeight,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(20),
+                    color: AppColors.cardBackground,
+                    border: Border.all(
+                      color: widget.mode == ConnectionMode.off
+                          ? Colors.white.withValues(alpha: 0.1)
+                          : _getModeColor(),
+                      width: 2,
                     ),
-                  ),
-                  AnimatedAlign(
-                    duration: _bounceController.isAnimating ? Duration.zero : const Duration(milliseconds: 300),
-                    curve: Curves.easeInOut,
-                    alignment: _getAlignment(),
-                    child: IgnorePointer(
-                      child: Container(
-                        margin: const EdgeInsets.all(6),
-                        width: sliderWidth,
-                        height: switchHeight - 12,
-                        decoration: BoxDecoration(
-                          color: _getModeColor(),
-                          borderRadius: BorderRadius.circular(15),
-                          boxShadow: [
+                    boxShadow: widget.mode != ConnectionMode.off
+                        ? [
                             BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.3),
-                              blurRadius: 8,
-                              offset: const Offset(0, 4),
+                              color: _getModeColor().withValues(alpha: 0.3),
+                              blurRadius: 20,
+                              spreadRadius: 2,
+                            )
+                          ]
+                        : [],
+                  ),
+                  child: Stack(
+                    children: [
+                      Center(
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onTap: () => _handleTap(ConnectionMode.off),
+                                child: Center(
+                                  child: Text(
+                                    AppStrings.modeOff,
+                                    style: TextStyle(
+                                      color: widget.mode == ConnectionMode.off
+                                          ? Colors.white
+                                          : Colors.white.withValues(alpha: 0.3),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onTap: () => _handleTap(ConnectionMode.smart),
+                                child: Center(
+                                  child: Text(
+                                    AppStrings.modeSmart,
+                                    style: TextStyle(
+                                      color: widget.mode == ConnectionMode.smart
+                                          ? Colors.white
+                                          : Colors.white.withValues(alpha: 0.3),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.translucent,
+                                onTap: () => _handleTap(ConnectionMode.global),
+                                child: Center(
+                                  child: Text(
+                                    AppStrings.modeGlobal,
+                                    style: TextStyle(
+                                      color: widget.mode == ConnectionMode.global
+                                          ? Colors.white
+                                          : Colors.white.withValues(alpha: 0.3),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 16,
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
                           ],
                         ),
-                        child: Center(
-                          child: Icon(
-                            _getModeIcon(),
-                            color: Colors.white,
-                            size: 32,
+                      ),
+                      AnimatedAlign(
+                        duration: _bounceController.isAnimating
+                            ? Duration.zero
+                            : const Duration(milliseconds: 300),
+                        curve: Curves.easeInOut,
+                        alignment: _getAlignment(),
+                        child: IgnorePointer(
+                          child: Container(
+                            margin: const EdgeInsets.all(6),
+                            width: sliderWidth,
+                            height: switchHeight - 12,
+                            decoration: BoxDecoration(
+                              color: _getModeColor(),
+                              borderRadius: BorderRadius.circular(15),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.3),
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
+                            ),
+                            child: Center(
+                              child: Icon(
+                                _getModeIcon(),
+                                color: Colors.white,
+                                size: 32,
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
-                ],
-              ),
+                );
+              },
             ),
           ],
         );

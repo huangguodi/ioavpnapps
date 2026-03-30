@@ -74,7 +74,7 @@ final class PacketFlowBridgeAdapter: NSObject {
 }
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
-  private let defaultAppGroup = "group.25632c4e368be58f.1"
+  private let defaultAppGroup = "group.com.xiangyu.clash"
   private var bridge: PacketFlowBridgeAdapter?
   private var pathMonitor: NWPathMonitor?
   private var homeURL: URL?
@@ -152,6 +152,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   }
 
   override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
+    if let message = String(data: messageData, encoding: .utf8),
+       let response = handleLightweightAppMessage(message) {
+      completionHandler?(response)
+      return
+    }
+
     guard
       let object = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
       let action = object["action"] as? String
@@ -170,6 +176,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       response["value"] = MobileGetMode() as String
     case "getProxies":
       response["value"] = MobileGetProxies() as String
+    case "getSelectedProxy":
+      let groupName = object["groupName"] as? String ?? "GLOBAL"
+      let proxiesJson = MobileGetProxies() as String
+      response["value"] = extractSelectedProxy(groupName: groupName, proxiesJson: proxiesJson) ?? ""
     case "urlTest":
       let name = (object["name"] as? String ?? "GLOBAL") as NSString
       response["value"] = MobileTestLatency(name) as String
@@ -190,6 +200,34 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     let data = try? JSONSerialization.data(withJSONObject: response)
     completionHandler?(data)
+  }
+
+  private func handleLightweightAppMessage(_ message: String) -> Data? {
+    if message == "getMode" {
+      return MobileGetMode().data(using: .utf8)
+    }
+    if message == "getProxies" {
+      return MobileGetProxies().data(using: .utf8)
+    }
+    if message.hasPrefix("getSelectedProxy|") {
+      let groupName = String(message.dropFirst("getSelectedProxy|".count))
+      let proxiesJson = MobileGetProxies() as String
+      let selected = extractSelectedProxy(groupName: groupName, proxiesJson: proxiesJson) ?? ""
+      return selected.data(using: .utf8)
+    }
+    if message.hasPrefix("urlTest|") {
+      let name = String(message.dropFirst("urlTest|".count)) as NSString
+      return (MobileTestLatency(name) as String).data(using: .utf8)
+    }
+    return nil
+  }
+
+  private func extractSelectedProxy(groupName: String, proxiesJson: String) -> String? {
+    guard let data = proxiesJson.data(using: .utf8) else { return nil }
+    guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+    guard let proxies = root["proxies"] as? [String: Any] else { return nil }
+    guard let group = proxies[groupName] as? [String: Any] else { return nil }
+    return group["now"] as? String
   }
 
   private func startReadPacketsLoop() {

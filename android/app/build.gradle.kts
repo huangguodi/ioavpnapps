@@ -1,3 +1,33 @@
+import java.io.File
+import java.util.Properties
+
+val keyPropertiesFile = File(rootDir, "key.properties")
+val keyProperties = Properties().apply {
+    if (keyPropertiesFile.exists()) {
+        keyPropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+fun releaseSigningValue(name: String, keyPropertiesName: String): String? {
+    return providers.gradleProperty(name).orNull
+        ?: providers.environmentVariable(name).orNull
+        ?: keyProperties.getProperty(keyPropertiesName)
+}
+
+val releaseStoreFilePath = releaseSigningValue("ANDROID_RELEASE_STORE_FILE", "storeFile")?.trim()
+val releaseStoreType = releaseSigningValue("ANDROID_RELEASE_STORE_TYPE", "storeType")?.trim()
+val releaseStorePassword = releaseSigningValue("ANDROID_RELEASE_STORE_PASSWORD", "storePassword")?.trim()
+val releaseKeyAlias = releaseSigningValue("ANDROID_RELEASE_KEY_ALIAS", "keyAlias")?.trim()
+val releaseKeyPassword = releaseSigningValue("ANDROID_RELEASE_KEY_PASSWORD", "keyPassword")?.trim()
+val hasReleaseSigning =
+    !releaseStoreFilePath.isNullOrBlank() &&
+    !releaseStorePassword.isNullOrBlank() &&
+    !releaseKeyAlias.isNullOrBlank() &&
+    !releaseKeyPassword.isNullOrBlank()
+val isReleaseBuildRequested = gradle.startParameter.taskNames.any {
+    it.contains("release", ignoreCase = true)
+}
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -25,10 +55,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.accelerator.tg"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
@@ -53,11 +80,31 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            if (hasReleaseSigning) {
+                storeFile = file(releaseStoreFilePath!!)
+                if (!releaseStoreType.isNullOrBlank()) {
+                    storeType = releaseStoreType
+                }
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            } else if (isReleaseBuildRequested) {
+                throw GradleException(
+                    "Missing Android release signing configuration. Set ANDROID_RELEASE_STORE_FILE, ANDROID_RELEASE_STORE_PASSWORD, ANDROID_RELEASE_KEY_ALIAS, and ANDROID_RELEASE_KEY_PASSWORD.",
+                )
+            }
             
             // ProGuard/R8 Obfuscation
             isMinifyEnabled = true

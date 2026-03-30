@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 import 'package:app/core/constants.dart';
 import 'package:app/core/logger.dart';
+import 'package:app/services/api_service.dart';
+import 'package:app/services/hot_update_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,9 +12,13 @@ import 'services/tray_service.dart';
 import 'views/splash_page.dart';
 import 'views/widgets/debug_overlay_button.dart';
 
-const MethodChannel _securityChannel = MethodChannel('com.accelerator.tg/security');
+const MethodChannel _securityChannel = MethodChannel(
+  'com.accelerator.tg/security',
+);
+const Duration _securityWatchdogInterval = Duration(seconds: 5);
+const Duration _initialSecurityWatchdogDelay = Duration(seconds: 4);
 Timer? _securityWatchdog;
-final GlobalKey<NavigatorState> _appNavigatorKey = GlobalKey<NavigatorState>();
+bool _isSecurityCheckInFlight = false;
 
 class _DirectOnlyHttpOverrides extends HttpOverrides {
   @override
@@ -27,102 +33,159 @@ Future<void> _enforceSecurity() async {
   if (!kIsWeb && !kDebugMode && !Platform.isIOS) {
     HttpOverrides.global = _DirectOnlyHttpOverrides();
   }
-  final isSupportedPlatform = !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isWindows);
+  final isSupportedPlatform =
+      !kIsWeb && (Platform.isAndroid || Platform.isIOS || Platform.isWindows);
   if (!isSupportedPlatform) {
     return;
   }
   try {
-    await _securityChannel.invokeMethod('enableSecureMode');
-    final isDebuggerAttached = await _securityChannel.invokeMethod<bool>('isDebuggerAttached') ?? false;
-    final isAppDebuggable = await _securityChannel.invokeMethod<bool>('isAppDebuggable') ?? false;
+    final isDebuggerAttached =
+        await _securityChannel.invokeMethod<bool>('isDebuggerAttached') ??
+        false;
+    final isAppDebuggable =
+        await _securityChannel.invokeMethod<bool>('isAppDebuggable') ?? false;
     // REMOVED: isProxyDetected because this is a VPN app and it will detect its own proxy
     if (!kDebugMode && (isDebuggerAttached || isAppDebuggable)) {
       await SystemNavigator.pop();
       return;
     }
     _securityWatchdog?.cancel();
-    _securityWatchdog = Timer.periodic(const Duration(seconds: 5), (_) async {
-      if (kDebugMode) return;
-      try {
-        final attached = await _securityChannel.invokeMethod<bool>('isDebuggerAttached') ?? false;
-        final debuggable = await _securityChannel.invokeMethod<bool>('isAppDebuggable') ?? false;
-        if (attached || debuggable) {
-          await SystemNavigator.pop();
-        }
-      } catch (_) {
-        // Do not crash on method channel errors in the background
-      }
-    });
+    _scheduleNextSecurityCheck(initial: true);
   } catch (_) {
     // Initial setup error, we can ignore to prevent false positive crashes
   }
 }
 
-Future<void> main() async {
-  await runZonedGuarded(() async {
-    WidgetsFlutterBinding.ensureInitialized();
-    FlutterError.onError = (details) {
-      FlutterError.presentError(details);
-      AppLogger.e(details.exceptionAsString(), details.exception, details.stack);
-    };
-    PlatformDispatcher.instance.onError = (error, stack) {
-      AppLogger.e(error.toString(), error, stack);
-      return true;
-    };
-    
-    await _enforceSecurity();
-    
-    if (!kIsWeb && Platform.isWindows) {
-      await windowManager.ensureInitialized();
-
-      WindowOptions windowOptions = const WindowOptions(
-        size: Size(300, 520),
-        minimumSize: Size(300, 520),
-        maximumSize: Size(300, 520),
-        center: true,
-        backgroundColor: Colors.transparent,
-        skipTaskbar: false,
-        titleBarStyle: TitleBarStyle.normal,
-        title: '加速器',
-      );
-      
-      await windowManager.waitUntilReadyToShow(windowOptions, () async {
-        await windowManager.setResizable(false);
-        await windowManager.setMaximizable(false);
-        await windowManager.setPreventClose(true);
-        await windowManager.show();
-        await windowManager.focus();
-      });
-
-      await TrayService().init();
+void _scheduleNextSecurityCheck({required bool initial}) {
+  _securityWatchdog?.cancel();
+  if (kDebugMode) {
+    AppPollingTaskRegistry.instance.registerTask(
+      id: 'security_watchdog',
+      interval: _securityWatchdogInterval,
+      initialDelay: _initialSecurityWatchdogDelay,
+      owner: 'main',
+      active: false,
+    );
+    return;
+  }
+  AppPollingTaskRegistry.instance.registerTask(
+    id: 'security_watchdog',
+    interval: _securityWatchdogInterval,
+    initialDelay: _initialSecurityWatchdogDelay,
+    owner: 'main',
+    active: true,
+  );
+  final delay = initial
+      ? _initialSecurityWatchdogDelay
+      : _securityWatchdogInterval;
+  _securityWatchdog = Timer(delay, () async {
+    await _runSecurityWatchdogCheck();
+    if (!kDebugMode) {
+      _scheduleNextSecurityCheck(initial: false);
     }
-    
-    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarDividerColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ));
-    
-    runApp(const MyApp());
-  }, (error, stack) {
-    AppLogger.e(error.toString(), error, stack);
   });
 }
 
+Future<void> _runSecurityWatchdogCheck() async {
+  if (_isSecurityCheckInFlight) return;
+  _isSecurityCheckInFlight = true;
+  try {
+    AppPollingTaskRegistry.instance.markTaskExecuted('security_watchdog');
+    final attached =
+        await _securityChannel.invokeMethod<bool>('isDebuggerAttached') ??
+        false;
+    final debuggable =
+        await _securityChannel.invokeMethod<bool>('isAppDebuggable') ?? false;
+    if (attached || debuggable) {
+      await SystemNavigator.pop();
+    }
+  } catch (_) {
+  } finally {
+    _isSecurityCheckInFlight = false;
+  }
+}
+
+Future<void> main() async {
+  await runZonedGuarded(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      FlutterError.onError = (details) {
+        FlutterError.presentError(details);
+        AppLogger.e(
+          details.exceptionAsString(),
+          details.exception,
+          details.stack,
+        );
+      };
+      PlatformDispatcher.instance.onError = (error, stack) {
+        AppLogger.e(error.toString(), error, stack);
+        return true;
+      };
+
+      await _enforceSecurity();
+
+      if (!kIsWeb && Platform.isWindows) {
+        await windowManager.ensureInitialized();
+
+        WindowOptions windowOptions = const WindowOptions(
+          size: Size(300, 520),
+          minimumSize: Size(300, 520),
+          maximumSize: Size(300, 520),
+          center: true,
+          backgroundColor: Colors.transparent,
+          skipTaskbar: false,
+          titleBarStyle: TitleBarStyle.normal,
+          title: '加速器',
+        );
+
+        await windowManager.waitUntilReadyToShow(windowOptions, () async {
+          await windowManager.setResizable(false);
+          await windowManager.setMaximizable(false);
+          await windowManager.setPreventClose(true);
+          await windowManager.show();
+          await windowManager.focus();
+        });
+
+        await TrayService().init();
+      }
+
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setSystemUIOverlayStyle(
+        const SystemUiOverlayStyle(
+          statusBarColor: Colors.transparent,
+          systemNavigationBarColor: Colors.transparent,
+          systemNavigationBarDividerColor: Colors.transparent,
+          statusBarIconBrightness: Brightness.light,
+          systemNavigationBarIconBrightness: Brightness.light,
+        ),
+      );
+
+      final runtimeAssetBundle = await HotUpdateService()
+          .resolveRuntimeAssetBundle();
+
+      runApp(MyApp(assetBundle: runtimeAssetBundle));
+    },
+    (error, stack) {
+      AppLogger.e(error.toString(), error, stack);
+    },
+  );
+}
+
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  final AssetBundle assetBundle;
+
+  const MyApp({super.key, required this.assetBundle});
 
   @override
   State<MyApp> createState() => _MyAppState();
 }
 
-class _MyAppState extends State<MyApp> with WindowListener {
+class _MyAppState extends State<MyApp>
+    with WidgetsBindingObserver, WindowListener {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (!kIsWeb && Platform.isWindows) {
       windowManager.addListener(this);
       _initTray();
@@ -135,6 +198,7 @@ class _MyAppState extends State<MyApp> with WindowListener {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     if (!kIsWeb && Platform.isWindows) {
       windowManager.removeListener(this);
     }
@@ -142,10 +206,21 @@ class _MyAppState extends State<MyApp> with WindowListener {
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      unawaited(ApiService().flushPendingUserInfoCache());
+    }
+  }
+
+  @override
   void onWindowClose() async {
     if (!kIsWeb && Platform.isWindows) {
-      bool _isPreventClose = await windowManager.isPreventClose();
-      if (_isPreventClose) {
+      final isPreventClose = await windowManager.isPreventClose();
+      if (isPreventClose) {
+        await ApiService().flushPendingUserInfoCache();
         await windowManager.hide(); // 隐藏窗口而非退出
       }
     }
@@ -154,27 +229,30 @@ class _MyAppState extends State<MyApp> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      navigatorKey: _appNavigatorKey,
-      title: 'VPN App',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF101F2D)),
-        useMaterial3: true,
-        scaffoldBackgroundColor: const Color(0xFF101F2D),
+    return DefaultAssetBundle(
+      bundle: widget.assetBundle,
+      child: MaterialApp(
+        navigatorKey: appNavigatorKey,
+        title: 'VPN App',
+        theme: ThemeData(
+          colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF101F2D)),
+          useMaterial3: true,
+          scaffoldBackgroundColor: const Color(0xFF101F2D),
+        ),
+        home: const SplashPage(),
+        builder: (context, child) {
+          if (!AppConfig.enableDebugOverlay) {
+            return child ?? const SizedBox.shrink();
+          }
+          return Stack(
+            children: [
+              child ?? const SizedBox.shrink(),
+              DebugOverlayButton(navigatorKey: appNavigatorKey),
+            ],
+          );
+        },
+        debugShowCheckedModeBanner: false,
       ),
-      home: const SplashPage(),
-      builder: (context, child) {
-        if (!AppConfig.enableDebugOverlay) {
-          return child ?? const SizedBox.shrink();
-        }
-        return Stack(
-          children: [
-            child ?? const SizedBox.shrink(),
-            DebugOverlayButton(navigatorKey: _appNavigatorKey),
-          ],
-        );
-      },
-      debugShowCheckedModeBanner: false,
     );
   }
 }

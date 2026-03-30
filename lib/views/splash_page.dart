@@ -4,8 +4,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:app/core/logger.dart';
 import 'package:app/services/api_service.dart';
+import 'package:app/services/hot_update_service.dart';
 import 'package:app/services/mihomo_service.dart';
 import 'package:app/core/constants.dart';
 import 'package:app/views/widgets/custom_dialog.dart';
@@ -19,16 +19,27 @@ class SplashPage extends StatefulWidget {
 }
 
 class _SplashPageState extends State<SplashPage> {
-  String? _lastStartupError;
+  static const int _maxStartupLoginAttempts = 3;
+  static const List<Duration> _startupLoginRetryDelays = [
+    Duration(milliseconds: 250),
+    Duration(milliseconds: 500),
+  ];
+  HotUpdateProgress? _hotUpdateProgress;
+  HotUpdateProgress? _lastStableHotUpdateProgress;
+  bool _isClosingAfterHotUpdate = false;
+  bool _isRetryingHotUpdate = false;
+
   @override
   void initState() {
     super.initState();
     // 设置沉浸式导航栏
-    SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      systemNavigationBarColor: Colors.transparent,
-      systemNavigationBarDividerColor: Colors.transparent,
-    ));
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarDividerColor: Colors.transparent,
+      ),
+    );
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
 
     // 延迟一帧执行，确保上下文准备好
@@ -41,22 +52,9 @@ class _SplashPageState extends State<SplashPage> {
   }
 
   Future<void> _initApp() async {
-    // 1. Request Android Permissions First
-    if (!kIsWeb && Platform.isAndroid) {
-      try {
-        // 请求通知权限 (Android 13+)
-        if (await Permission.notification.isDenied) {
-          await Permission.notification.request();
-        }
-
-        // 请求忽略电池优化 (华为/小米等保活关键)
-        // 注意：部分应用商店可能禁止直接请求此权限，但在国内环境这是必须的
-        if (await Permission.ignoreBatteryOptimizations.isDenied) {
-           await Permission.ignoreBatteryOptimizations.request();
-        }
-      } catch (e) {
-        // 忽略权限请求错误，避免阻塞后续流程
-      }
+    final canContinue = await _runHotUpdateBeforeLogin();
+    if (!canContinue || !mounted) {
+      return;
     }
 
     final hasLocalToken = await ApiService().checkLocalToken();
@@ -65,95 +63,100 @@ class _SplashPageState extends State<SplashPage> {
       await ApiService().fetchUserInfo();
     }
 
-    String? errorMsg;
-    try {
-      errorMsg = await ApiService().login();
-      if (errorMsg != null &&
-          errorMsg.contains('Failed host lookup')) {
-        await Future.delayed(const Duration(milliseconds: 600));
-        await ApiService().initNativeKeys();
-        errorMsg = await ApiService().login();
-        if (errorMsg != null && errorMsg.contains('Failed host lookup')) {
-          await Future.delayed(const Duration(seconds: 1));
-          errorMsg = await ApiService().login();
-        }
-      }
-    } catch (e) {
-      errorMsg = "Exception: $e";
-    }
-    
+    final errorMsg = await _loginWithStartupRetry();
+
     // Check if widget is still mounted after async operations
     if (!mounted) return;
 
     final success = errorMsg == null;
-    
+
     if (success) {
       final redeemed = await _ensureGiftCardRedeemed();
       if (!redeemed || !mounted) return;
       bool started = await _startMihomo();
       if (started) {
         final initialMode = await _resolveInitialMode();
-        await _prepareHomeResources();
+        _scheduleDeferredStartupTasks();
         _navigateToHome(initialMode);
       } else {
-        await _showStartupError(_lastStartupError ?? '服务启动失败，请检查网络后重试。');
+        await _exitApp();
       }
     } else {
-      await _showStartupError(errorMsg);
+      await _exitApp();
     }
   }
 
-  Future<void> _showStartupError(String message) async {
-    if (!mounted) return;
-    await showAnimatedDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('启动失败'),
-          content: Text(message),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('知道了'),
-            ),
-          ],
+  Future<bool> _runHotUpdateBeforeLogin() async {
+    try {
+      final result = await HotUpdateService().performStartupUpdate(
+        onProgress: (progress) {
+          if (!mounted) return;
+          setState(() {
+            if (progress.stage != HotUpdateStage.failed) {
+              _lastStableHotUpdateProgress = progress;
+            }
+            _hotUpdateProgress = progress;
+          });
+        },
+      );
+      if (!mounted) return false;
+      if (result.appliedUpdate ||
+          result.requiresRestart ||
+          !result.shouldContinue) {
+        return false;
+      }
+      setState(() {
+        _hotUpdateProgress = null;
+      });
+      return true;
+    } catch (e) {
+      if (!mounted) return false;
+      setState(() {
+        _hotUpdateProgress ??= HotUpdateProgress(
+          stage: HotUpdateStage.failed,
+          title: '热更新失败',
+          detail: e.toString(),
         );
-      },
-    );
+      });
+      return false;
+    }
   }
 
-  Future<void> _showPermissionDeniedDialog(String title, String message) async {
-    if (!mounted) return;
-    await showAnimatedDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: AppColors.cardBackground,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: Color(0xFF96CBFF), width: 1.1),
-          ),
-          title: Text(
-            '$title被拒绝',
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
-          ),
-          content: Text(
-            '$message\n\n请在系统设置中手动授权，然后重新打开应用。',
-            style: const TextStyle(color: Colors.white70, fontSize: 15, height: 1.5),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                SystemNavigator.pop();
-              },
-              child: const Text('退出应用', style: TextStyle(color: Color(0xFF96CBFF), fontSize: 16)),
-            ),
-          ],
-        );
-      },
-    );
+  Future<String?> _loginWithStartupRetry() async {
+    String? lastError;
+    for (var attempt = 0; attempt < _maxStartupLoginAttempts; attempt++) {
+      try {
+        lastError = await ApiService().login();
+      } catch (e) {
+        lastError = "Exception: $e";
+      }
+      if (lastError == null || !_shouldRetryStartupLogin(lastError)) {
+        return lastError;
+      }
+      if (attempt >= _startupLoginRetryDelays.length) {
+        return lastError;
+      }
+      await Future.delayed(_startupLoginRetryDelays[attempt]);
+      if (!mounted) {
+        return lastError;
+      }
+      await ApiService().initNativeKeys();
+    }
+    return lastError;
+  }
+
+  bool _shouldRetryStartupLogin(String? errorMsg) {
+    if (errorMsg == null) {
+      return false;
+    }
+    final normalized = errorMsg.toLowerCase();
+    return normalized.contains('failed host lookup') ||
+        normalized.contains('timeoutexception') ||
+        normalized.contains('socketexception') ||
+        normalized.contains(
+          'connection closed before full header was received',
+        ) ||
+        normalized.contains('connection reset by peer');
   }
 
   Future<bool> _ensureGiftCardRedeemed() async {
@@ -184,12 +187,19 @@ class _SplashPageState extends State<SplashPage> {
               Expanded(
                 child: Text(
                   isError ? '兑换失败' : '提示',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
               IconButton(
                 onPressed: () => Navigator.of(context).pop(),
-                icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 20),
+                icon: const Icon(
+                  Icons.close_rounded,
+                  color: Colors.white60,
+                  size: 20,
+                ),
               ),
             ],
           ),
@@ -244,7 +254,10 @@ class _SplashPageState extends State<SplashPage> {
                     ),
                     SafeArea(
                       child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 22),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 22,
+                          vertical: 22,
+                        ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
@@ -284,47 +297,79 @@ class _SplashPageState extends State<SplashPage> {
                                     controller: controller,
                                     enabled: !isSubmitting,
                                     onChanged: (_) => setState(() {}),
-                                    style: const TextStyle(color: Colors.white),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 14,
+                                    ),
                                     decoration: InputDecoration(
-                                      hintText: '输入礼品卡密',
-                                      hintStyle: const TextStyle(color: Colors.white38),
+                                      hintText: '礼品卡密',
+                                      hintStyle: const TextStyle(
+                                        color: Colors.white38,
+                                      ),
                                       filled: true,
-                                      fillColor: Colors.white.withValues(alpha: 0.09),
+                                      fillColor: Colors.white.withValues(
+                                        alpha: 0.09,
+                                      ),
                                       enabledBorder: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(12),
-                                        borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.24)),
+                                        borderSide: BorderSide(
+                                          color: Colors.white.withValues(
+                                            alpha: 0.24,
+                                          ),
+                                        ),
                                       ),
                                       focusedBorder: OutlineInputBorder(
                                         borderRadius: BorderRadius.circular(12),
-                                        borderSide: const BorderSide(color: Color(0xFF96CBFF), width: 1.2),
+                                        borderSide: const BorderSide(
+                                          color: Color(0xFF96CBFF),
+                                          width: 1.2,
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
                                 const SizedBox(width: 10),
                                 SizedBox(
+                                  width: 33,
                                   height: 48,
                                   child: OutlinedButton.icon(
                                     onPressed: isSubmitting
                                         ? null
                                         : () async {
-                                            final clipData = await Clipboard.getData('text/plain');
-                                            final text = clipData?.text?.trim() ?? '';
+                                            final clipData =
+                                                await Clipboard.getData(
+                                                  'text/plain',
+                                                );
+                                            final text =
+                                                clipData?.text?.trim() ?? '';
                                             if (text.isEmpty) return;
                                             controller.text = text;
-                                            controller.selection = TextSelection.fromPosition(
-                                              TextPosition(offset: controller.text.length),
-                                            );
+                                            controller.selection =
+                                                TextSelection.fromPosition(
+                                                  TextPosition(
+                                                    offset:
+                                                        controller.text.length,
+                                                  ),
+                                                );
                                             setState(() {});
                                           },
                                     style: OutlinedButton.styleFrom(
                                       foregroundColor: const Color(0xFF96CBFF),
-                                      side: const BorderSide(color: Color(0xFF96CBFF), width: 1),
+                                      side: const BorderSide(
+                                        color: Color(0xFF96CBFF),
+                                        width: 1,
+                                      ),
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(12),
                                       ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                      ),
                                     ),
-                                    icon: const Icon(Icons.content_paste_rounded, size: 16),
+                                    icon: const Icon(
+                                      Icons.content_paste_rounded,
+                                      size: 16,
+                                    ),
                                     label: const Text('粘贴'),
                                   ),
                                 ),
@@ -341,12 +386,15 @@ class _SplashPageState extends State<SplashPage> {
                                         setState(() {
                                           isSubmitting = true;
                                         });
-                                        final result = await ApiService().submitGiftCard(invite: invite);
+                                        final result = await ApiService()
+                                            .submitGiftCard(invite: invite);
                                         if (!context.mounted) return;
                                         if (result.isSuccess) {
-                                          final reloginError = await ApiService().login();
+                                          final reloginError =
+                                              await ApiService().login();
                                           if (!context.mounted) return;
-                                          if (reloginError == null || !ApiService().isDpidInvalid) {
+                                          if (reloginError == null ||
+                                              !ApiService().isDpidInvalid) {
                                             Navigator.of(context).pop();
                                             return;
                                           }
@@ -370,12 +418,16 @@ class _SplashPageState extends State<SplashPage> {
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: const Color(0xFF96CBFF),
                                   foregroundColor: Colors.black,
-                                  disabledBackgroundColor: const Color(0xFF96CBFF).withValues(alpha: 0.7),
+                                  disabledBackgroundColor: const Color(
+                                    0xFF96CBFF,
+                                  ).withValues(alpha: 0.7),
                                   disabledForegroundColor: Colors.black54,
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(14),
                                   ),
-                                  padding: const EdgeInsets.symmetric(vertical: 14),
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 14,
+                                  ),
                                   elevation: 0,
                                 ),
                                 child: isSubmitting
@@ -399,7 +451,7 @@ class _SplashPageState extends State<SplashPage> {
                             ),
                           ],
                         ),
-                      ),                    
+                      ),
                     ),
                   ],
                 ),
@@ -409,7 +461,10 @@ class _SplashPageState extends State<SplashPage> {
         );
       },
       transitionBuilder: (context, animation, secondaryAnimation, child) {
-        final curved = CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+        );
         return FadeTransition(
           opacity: curved,
           child: SlideTransition(
@@ -425,66 +480,56 @@ class _SplashPageState extends State<SplashPage> {
   }
 
   Future<bool> _startMihomo() async {
-    _lastStartupError = null;
     try {
-      if (Platform.isIOS) {
-        final permissionGranted = await MihomoService().requestVpnPermission();
-        if (!permissionGranted) {
-          AppLogger.w('iOS requestVpnPermission returned false, continue to start tunnel for system auth trigger');
-        }
-      }
       // Initialize service (copy assets, MMDB, etc.)
       await MihomoService().init();
-      
+
       // Stop any existing instance to ensure a fresh cold start with correct ports
       if (await MihomoService().checkIsRunning()) {
-         await MihomoService().stop();
-         await Future.delayed(const Duration(seconds: 1));
+        await MihomoService().stop();
+        await Future.delayed(const Duration(seconds: 1));
       }
-      
+
       final userInfo = ApiService().userInfo;
       if (userInfo != null) {
         final subscribeUrl = userInfo['subscribe_url'];
         if (subscribeUrl != null && subscribeUrl.toString().isNotEmpty) {
-           final startError = await MihomoService().start(subscribeUrl: subscribeUrl.toString());
-           if (startError != null) {
-             final lower = startError.toLowerCase();
-             if (lower.contains('permission denied') || lower.contains('vpn_permission_denied')) {
-               _lastStartupError = '服务启动失败：VPN 权限未授权，请在系统弹窗中点击允许。';
-             } else {
-               _lastStartupError = '服务启动失败：$startError';
-             }
-             return false;
-           }
-           for (int i = 0; i < 10; i++) {
-             final running = await MihomoService().checkIsRunning();
-             if (running) {
-               return true;
-             }
-             await Future.delayed(const Duration(milliseconds: 500));
-           }
-           if (Platform.isIOS) {
-             _lastStartupError = '服务启动失败：VPN 未成功连接，请确认已允许 VPN 权限。';
-           } else {
-             _lastStartupError = '服务启动失败：内核未运行';
-           }
-           return false;
+          final startError = await MihomoService().start(
+            subscribeUrl: subscribeUrl.toString(),
+          );
+          if (startError != null) {
+            return false;
+          }
+          for (int i = 0; i < 10; i++) {
+            final running = await MihomoService().checkIsRunning();
+            if (running) {
+              return true;
+            }
+            await Future.delayed(const Duration(milliseconds: 500));
+          }
+          return false;
         } else {
-           _lastStartupError = '启动失败：缺少订阅地址';
-           return false;
+          return false;
         }
       }
-      _lastStartupError = '启动失败：用户信息为空';
       return false;
-    } on PlatformException catch (e) {
-      _lastStartupError = e.code == "VPN_PERMISSION_DENIED"
-          ? '权限被拒绝：加速器需要 VPN 权限才能工作。'
-          : '服务启动失败：${e.message ?? e.toString()}';
+    } on PlatformException {
       return false;
-    } catch (e) {
-      _lastStartupError = '服务启动失败：$e';
+    } catch (_) {
       return false;
     }
+  }
+
+  Future<void> _exitApp() async {
+    if (kIsWeb) return;
+    if (Platform.isWindows) {
+      exit(0);
+    }
+    if (Platform.isAndroid || Platform.isIOS) {
+      await SystemNavigator.pop();
+      return;
+    }
+    exit(0);
   }
 
   Future<ConnectionMode> _resolveInitialMode() async {
@@ -500,30 +545,256 @@ class _SplashPageState extends State<SplashPage> {
     }
   }
 
-  Future<void> _prepareHomeResources() async {
-    if (!mounted) return;
-    await Future.wait([
-      precacheImage(AssetImage(AppAssets.resolveImage(context, 'gradient.png')), context),
-      precacheImage(AssetImage(AppAssets.resolveImage(context, 'gradient1.png')), context),
-      precacheImage(AssetImage(AppAssets.resolveImage(context, 'gradient2.png')), context),
-      precacheImage(AssetImage(AppAssets.resolveImage(context, 'logo.png')), context),
-    ]);
+  void _scheduleDeferredStartupTasks() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_runDeferredStartupTasks());
+    });
+  }
+
+  Future<void> _runDeferredStartupTasks() async {
+    if (kIsWeb || !Platform.isAndroid) {
+      return;
+    }
+    try {
+      if (await Permission.notification.isDenied) {
+        await Permission.notification.request();
+      }
+      if (await Permission.ignoreBatteryOptimizations.isDenied) {
+        await Permission.ignoreBatteryOptimizations.request();
+      }
+    } catch (e) {
+      debugPrint('SplashPage deferred permission request skipped: $e');
+    }
   }
 
   Future<void> _navigateToHome(ConnectionMode initialMode) async {
-    // 确保服务完全启动后再跳转
-    // MihomoService().start() 现在已经是 awaitable 的，并在内部验证了连接。
-    // 所以这里无需额外等待。
     Navigator.pushReplacement(
       context,
       PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) => HomePage(initialMode: initialMode),
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            HomePage(initialMode: initialMode),
         transitionsBuilder: (context, animation, secondaryAnimation, child) {
           return FadeTransition(opacity: animation, child: child);
         },
         transitionDuration: const Duration(milliseconds: 800),
       ),
     );
+  }
+
+  double _progressValue(double value) {
+    return value.clamp(0.0, 1.0);
+  }
+
+  int _hotUpdateStepIndex(HotUpdateStage stage) {
+    switch (stage) {
+      case HotUpdateStage.checking:
+        return 1;
+      case HotUpdateStage.downloading:
+        return 2;
+      case HotUpdateStage.extracting:
+      case HotUpdateStage.applying:
+        return 3;
+      case HotUpdateStage.completed:
+      case HotUpdateStage.restarting:
+        return 4;
+      case HotUpdateStage.failed:
+      case HotUpdateStage.idle:
+        return 0;
+    }
+  }
+
+  double _hotUpdateStepProgress(HotUpdateProgress progress) {
+    switch (progress.stage) {
+      case HotUpdateStage.checking:
+        return 0.35;
+      case HotUpdateStage.downloading:
+        return _progressValue(progress.downloadProgress);
+      case HotUpdateStage.extracting:
+        return _progressValue(progress.extractProgress * 0.5);
+      case HotUpdateStage.applying:
+        return _progressValue(0.5 + progress.applyProgress * 0.5);
+      case HotUpdateStage.completed:
+      case HotUpdateStage.restarting:
+        return 1;
+      case HotUpdateStage.failed:
+      case HotUpdateStage.idle:
+        return 0;
+    }
+  }
+
+  HotUpdateProgress _displayHotUpdateProgress(HotUpdateProgress progress) {
+    if (progress.stage == HotUpdateStage.failed &&
+        _lastStableHotUpdateProgress != null) {
+      return _lastStableHotUpdateProgress!;
+    }
+    return progress;
+  }
+
+  double _overallHotUpdateProgress(HotUpdateProgress progress) {
+    final displayProgress = _displayHotUpdateProgress(progress);
+    final stepIndex = _hotUpdateStepIndex(displayProgress.stage);
+    if (stepIndex <= 0) {
+      return 0;
+    }
+    return _progressValue(
+      ((stepIndex - 1) + _hotUpdateStepProgress(displayProgress)) / 4,
+    );
+  }
+
+  bool _shouldShowCloseAction(HotUpdateProgress progress) {
+    return progress.stage == HotUpdateStage.completed ||
+        progress.stage == HotUpdateStage.restarting ||
+        progress.stage == HotUpdateStage.failed;
+  }
+
+  Future<void> _closeAppForHotUpdate() async {
+    if (_isClosingAfterHotUpdate) {
+      return;
+    }
+    setState(() {
+      _isClosingAfterHotUpdate = true;
+    });
+    await _exitApp();
+  }
+
+  Future<void> _retryHotUpdate() async {
+    if (_isRetryingHotUpdate || _isClosingAfterHotUpdate) {
+      return;
+    }
+    setState(() {
+      _isRetryingHotUpdate = true;
+      _hotUpdateProgress = null;
+      _lastStableHotUpdateProgress = null;
+    });
+    try {
+      await _initApp();
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRetryingHotUpdate = false;
+        });
+      }
+    }
+  }
+
+  Widget _buildHotUpdatePanel() {
+    final progress = _hotUpdateProgress;
+    if (progress == null) {
+      return const SizedBox.shrink();
+    }
+    final overallProgress = _overallHotUpdateProgress(progress);
+    final percentText = '${(overallProgress * 100).toStringAsFixed(0)}%';
+    final isFailed = progress.stage == HotUpdateStage.failed;
+    final statusText = _hotUpdateStatusText(progress);
+    return SizedBox(
+      width: double.infinity,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 320),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    statusText,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: isFailed ? const Color(0xFFFFD7D7) : Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text(
+                  percentText,
+                  style: TextStyle(
+                    color: isFailed
+                        ? const Color(0xFFFFB0B0)
+                        : const Color(0xFF96CBFF),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(999),
+              child: LinearProgressIndicator(
+                value: overallProgress,
+                minHeight: 8,
+                backgroundColor: Colors.white.withValues(alpha: 0.08),
+                valueColor: AlwaysStoppedAnimation(
+                  isFailed ? const Color(0xFFFF8A8A) : const Color(0xFF96CBFF),
+                ),
+              ),
+            ),
+            if (isFailed) ...[
+              const SizedBox(height: 14),
+              TextButton(
+                onPressed: _isRetryingHotUpdate ? null : _retryHotUpdate,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF96CBFF),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
+                child: Text(
+                  _isRetryingHotUpdate ? '正在重试...' : '重试更新',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+            if (_shouldShowCloseAction(progress)) ...[
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: _isClosingAfterHotUpdate
+                    ? null
+                    : _closeAppForHotUpdate,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFF96CBFF),
+                  disabledForegroundColor: Colors.white38,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                ),
+                child: Text(
+                  _isClosingAfterHotUpdate ? '正在关闭 App...' : '确认关闭 App',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _hotUpdateStatusText(HotUpdateProgress progress) {
+    if (progress.stage == HotUpdateStage.failed) {
+      return progress.detail;
+    }
+    if (progress.detail.trim().isNotEmpty) {
+      return progress.detail;
+    }
+    return progress.title;
   }
 
   @override
@@ -536,15 +807,31 @@ class _SplashPageState extends State<SplashPage> {
       ),
       child: Scaffold(
         backgroundColor: const Color(0xFF101F2D),
-        body: Center(
-          child: Hero(
-            tag: 'app_logo',
-            child: Material(
-              color: Colors.transparent,
-              child: Image.asset(
-                AppAssets.resolveImage(context, 'logo.png'),
-                scale: 4.0, // 强制指定 scale 为 4.0 (xxxhdpi)，使大小与原生启动图一致
-              ),
+        body: SafeArea(
+          minimum: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Hero(
+                  tag: 'app_logo',
+                  child: Material(
+                    color: Colors.transparent,
+                    child: Image.asset(
+                      AppAssets.resolveImage(context, 'logo.png'),
+                      scale: 4.0,
+                    ),
+                  ),
+                ),
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  child: _hotUpdateProgress == null
+                      ? const SizedBox(height: 0)
+                      : const SizedBox(height: 26),
+                ),
+                _buildHotUpdatePanel(),
+              ],
             ),
           ),
         ),

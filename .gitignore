@@ -58,4 +58,6 @@ app.*.map.json
 # Local certificates and secrets
 *.pem
 *.p12
+*.jks
 *.mobileprovision
+/android/key.properties

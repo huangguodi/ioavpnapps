@@ -1,11 +1,8 @@
 import 'package:app/core/logger.dart';
 import 'package:app/services/mihomo_service.dart';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'package:system_tray/system_tray.dart';
 import 'package:window_manager/window_manager.dart';
-import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 
 class TrayService {
   static final TrayService _instance = TrayService._internal();
