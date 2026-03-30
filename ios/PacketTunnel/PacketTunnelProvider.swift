@@ -75,9 +75,17 @@ final class PacketFlowBridgeAdapter: NSObject {
 
 final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let defaultAppGroup = "group.com.xiangyu.clash"
+  private let ipv4Address = "198.18.0.1"
+  private let ipv4SubnetMask = "255.255.255.0"
+  private let ipv6Address = "fdfe:dcba:9876::1"
+  private let ipv6PrefixLength = 126
+  private let dnsServers = ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888"]
+  private let pathRestartThrottle: TimeInterval = 2.0
   private var bridge: PacketFlowBridgeAdapter?
   private var pathMonitor: NWPathMonitor?
   private var homeURL: URL?
+  private var hasObservedInitialPathUpdate = false
+  private var lastPathRestartAt = Date.distantPast
 
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
     let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
@@ -100,12 +108,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       return
     }
 
-    let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "198.18.0.1")
-    let ipv4Settings = NEIPv4Settings(addresses: ["198.18.0.1"], subnetMasks: ["255.255.255.0"])
+    let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: ipv4Address)
+    let ipv4Settings = NEIPv4Settings(addresses: [ipv4Address], subnetMasks: [ipv4SubnetMask])
     ipv4Settings.includedRoutes = [NEIPv4Route.default()]
     settings.ipv4Settings = ipv4Settings
+    let ipv6Settings = NEIPv6Settings(
+      addresses: [ipv6Address],
+      networkPrefixLengths: [NSNumber(value: ipv6PrefixLength)]
+    )
+    ipv6Settings.includedRoutes = [NEIPv6Route.default()]
+    settings.ipv6Settings = ipv6Settings
     settings.mtu = 1400
-    let dns = NEDNSSettings(servers: ["1.1.1.1", "8.8.8.8"])
+    let dns = NEDNSSettings(servers: dnsServers)
     dns.matchDomains = [""]
     settings.dnsSettings = dns
 
@@ -136,6 +150,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
     pathMonitor?.cancel()
     pathMonitor = nil
+    hasObservedInitialPathUpdate = false
+    lastPathRestartAt = Date.distantPast
     MobileClearPacketFlowBridge()
     bridge = nil
     MobileStop()
@@ -148,7 +164,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   }
 
   override func wake() {
-    _ = MobileWake()
+    if !MobileWake() {
+      _ = MobileRestartTunnelForNetworkChange()
+    }
   }
 
   override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
@@ -257,6 +275,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private func startPathMonitor() {
     let monitor = NWPathMonitor()
     monitor.pathUpdateHandler = { _ in
+      if !self.hasObservedInitialPathUpdate {
+        self.hasObservedInitialPathUpdate = true
+        return
+      }
+      let now = Date()
+      if now.timeIntervalSince(self.lastPathRestartAt) < self.pathRestartThrottle {
+        return
+      }
+      self.lastPathRestartAt = now
       _ = MobileRestartTunnelForNetworkChange()
     }
     monitor.start(queue: DispatchQueue(label: "com.accelerator.tg.packettunnel.path"))

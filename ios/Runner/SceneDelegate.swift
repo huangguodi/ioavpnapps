@@ -1,8 +1,7 @@
 import Flutter
 import UIKit
 
-class SceneDelegate: UIResponder, UIWindowSceneDelegate {
-  var window: UIWindow?
+final class SceneDelegate: FlutterSceneDelegate {
 
   func scene(
     _ scene: UIScene,
@@ -25,7 +24,11 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     GeneratedPluginRegistrant.register(with: controller)
     window.rootViewController = controller
     self.window = window
+    if let appDelegate = UIApplication.shared.delegate as? AppDelegate {
+      appDelegate.configureChannelsIfNeeded(with: controller)
+    }
     window.makeKeyAndVisible()
+    super.scene(scene, willConnectTo: session, options: connectionOptions)
   }
 
   private func hotUpdateRootURL() -> URL? {

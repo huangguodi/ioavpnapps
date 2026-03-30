@@ -300,6 +300,13 @@ class MihomoService {
         return "Config format invalid";
       }
 
+      if (Platform.isIOS) {
+        final granted = await requestVpnPermission();
+        if (!granted) {
+          return "VPN permission denied";
+        }
+      }
+
       final configPath = await _saveConfig(configContent);
 
       return await _startNative(configPath, configContent);

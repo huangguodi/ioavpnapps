@@ -94,7 +94,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 }
 
 @main
-@objc class AppDelegate: FlutterAppDelegate, FlutterImplicitEngineDelegate {
+@objc class AppDelegate: FlutterAppDelegate {
   private let tunnelBundleIdentifier = "com.xiangyu.clash.packettunnel"
   private let tunnelDescription = "CarbonLAM Tunnel"
   private let appGroupIdentifier = "group.com.xiangyu.clash"
@@ -110,38 +110,12 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    configureChannelsIfNeeded()
     primeTunnelManagerCache()
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 
-  func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
-    GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
-  }
-
-  private func resolveFlutterViewController() -> FlutterViewController? {
-    if let controller = window?.rootViewController as? FlutterViewController {
-      return controller
-    }
-    for scene in UIApplication.shared.connectedScenes {
-      guard let windowScene = scene as? UIWindowScene else { continue }
-      for sceneWindow in windowScene.windows {
-        if let controller = sceneWindow.rootViewController as? FlutterViewController {
-          return controller
-        }
-      }
-    }
-    return nil
-  }
-
-  private func configureChannelsIfNeeded() {
+  func configureChannelsIfNeeded(with controller: FlutterViewController) {
     if channelsConfigured {
-      return
-    }
-    guard let controller = resolveFlutterViewController() else {
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-        self?.configureChannelsIfNeeded()
-      }
       return
     }
     channelsConfigured = true
@@ -429,6 +403,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       let proto = NETunnelProviderProtocol()
       proto.providerBundleIdentifier = self.tunnelBundleIdentifier
       proto.serverAddress = "CarbonLAM"
+      proto.disconnectOnSleep = false
       proto.providerConfiguration = [
         "configContent": configContent,
         "appGroup": self.appGroupIdentifier
@@ -510,6 +485,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       let proto = NETunnelProviderProtocol()
       proto.providerBundleIdentifier = self.tunnelBundleIdentifier
       proto.serverAddress = "CarbonLAM"
+      proto.disconnectOnSleep = false
       proto.providerConfiguration = [
         "appGroup": self.appGroupIdentifier
       ]
