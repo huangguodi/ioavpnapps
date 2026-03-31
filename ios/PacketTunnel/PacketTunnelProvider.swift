@@ -118,7 +118,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     )
     ipv6Settings.includedRoutes = [NEIPv6Route.default()]
     settings.ipv6Settings = ipv6Settings
-    settings.mtu = 1400
+    settings.mtu = 9000
     let dns = NEDNSSettings(servers: dnsServers)
     dns.matchDomains = [""]
     settings.dnsSettings = dns
@@ -155,7 +155,7 @@ tun:
   auto-route: false
   auto-detect-interface: false
   auto-redirect: false
-  mtu: 1400
+  mtu: 9000
   dns-hijack:
     - 0.0.0.0:53
     - "[::]:53"
@@ -313,7 +313,10 @@ tun:
           }
         }
       }
-      self.startReadPacketsLoop()
+      // Async dispatch to prevent stack overflow and high CPU usage from synchronous recursion
+      DispatchQueue.main.async { [weak self] in
+        self?.startReadPacketsLoop()
+      }
     }
   }
 
