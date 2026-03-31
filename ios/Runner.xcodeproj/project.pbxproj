@@ -419,6 +419,7 @@
 				SKIP_INSTALL = YES;
 				MARKETING_VERSION = 1.0.1;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_OBJC_BRIDGING_HEADER = "PacketTunnel/PacketTunnel-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				OTHER_CFLAGS = "-fapplication-extension";
@@ -453,6 +454,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = Clash_Extension_Profile;
 				SKIP_INSTALL = YES;
 				MARKETING_VERSION = 1.0.1;
+				SWIFT_OBJC_BRIDGING_HEADER = "PacketTunnel/PacketTunnel-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				OTHER_CFLAGS = "-fapplication-extension";
@@ -487,6 +489,7 @@
 				PROVISIONING_PROFILE_SPECIFIER = Clash_Extension_Profile;
 				SKIP_INSTALL = YES;
 				MARKETING_VERSION = 1.0.1;
+				SWIFT_OBJC_BRIDGING_HEADER = "PacketTunnel/PacketTunnel-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				OTHER_CFLAGS = "-fapplication-extension";

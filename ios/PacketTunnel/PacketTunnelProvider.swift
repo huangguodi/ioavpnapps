@@ -2,32 +2,7 @@ import Foundation
 import NetworkExtension
 import Network
 
-@_silgen_name("MobileMihomoWarmup") private func MihomoWarmup()
-@_silgen_name("MobileMobileStartWithMemory") private func MobileStartWithMemory(_ cfgStr: NSString?, _ error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> Bool
-@_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
-@_silgen_name("MobileStop") private func MobileStop()
-@_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
-@_silgen_name("MobileGetMode") private func MobileGetMode() -> Unmanaged<AnyObject>?
-@_silgen_name("MobileGetProxies") private func MobileGetProxies() -> Unmanaged<AnyObject>?
-@_silgen_name("MobileSelectProxy") private func MobileSelectProxy(_ groupName: NSString?, _ proxyName: NSString?) -> Bool
-@_silgen_name("MobileTestLatency") private func MobileTestLatency(_ proxyName: NSString?) -> Unmanaged<AnyObject>?
-@_silgen_name("MobileForceUpdateConfig") private func MobileForceUpdateConfig(_ configFileName: NSString?)
-@_silgen_name("MobileTrafficUp") private func MobileTrafficUp() -> Int64
-@_silgen_name("MobileTrafficDown") private func MobileTrafficDown() -> Int64
-@_silgen_name("MobileTrafficTotalUp") private func MobileTrafficTotalUp() -> Int64
-@_silgen_name("MobileTrafficTotalDown") private func MobileTrafficTotalDown() -> Int64
-@_silgen_name("MobileSetAppGroupDirectory") private func MobileSetAppGroupDirectory(_ dir: NSString?) -> Bool
-@_silgen_name("MobileSetPacketFlowBridge") private func MobileSetPacketFlowBridge(_ bridge: AnyObject?)
-@_silgen_name("MobileClearPacketFlowBridge") private func MobileClearPacketFlowBridge()
-@_silgen_name("MobileFeedPacketBytes") private func MobileFeedPacketBytes(_ data: NSData?, _ af: Int64) -> Bool
-@_silgen_name("MobileResetNetwork") private func MobileResetNetwork()
-@_silgen_name("MobileSetSocketProtector") private func MobileSetSocketProtector(_ protector: AnyObject?)
-@_silgen_name("MobileClearSocketProtector") private func MobileClearSocketProtector()
-@_silgen_name("MobileSleep") private func MobileSleep()
-@_silgen_name("MobileWake") private func MobileWake() -> Bool
-@_silgen_name("MobileRestartTunnelForNetworkChange") private func MobileRestartTunnelForNetworkChange() -> Bool
-
-final class PacketFlowBridgeAdapter: NSObject {
+final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridgeProtocol {
   private let packetFlow: NEPacketTunnelFlow
   private let onError: (String) -> Void
   private let lockQueue = DispatchQueue(label: "com.accelerator.tg.packetflow.bridge")
@@ -49,12 +24,11 @@ final class PacketFlowBridgeAdapter: NSObject {
   }
 
   @objc(writePacket:)
-  func writePacket(_ packet: AnyObject?) -> Bool {
+  func writePacket(_ packet: MobilePacketFlowPacket?) -> Bool {
     guard let packet else { return false }
     return autoreleasepool {
-      guard let rawData = packet.perform(NSSelectorFromString("data"))?.takeUnretainedValue() as? Data else { return false }
-      guard let afNum = packet.perform(NSSelectorFromString("af"))?.takeUnretainedValue() as? NSNumber else { return false }
-      let af = afNum.int32Value
+      guard let rawData = packet.data() else { return false }
+      let af = Int32(packet.af())
       if af != AF_INET && af != AF_INET6 {
         return false
       }
@@ -64,7 +38,7 @@ final class PacketFlowBridgeAdapter: NSObject {
   }
 }
 
-final class SocketProtectorAdapter: NSObject {
+final class SocketProtectorAdapter: NSObject, MobileSocketProtectorProtocol {
   // Currently unused since NEPacketTunnelProvider doesn't provide a mark socket API for file descriptors directly
   // But we provide the implementation for the libmihomo hook.
   
@@ -200,15 +174,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
           }
 
-          _ = MobileSetAppGroupDirectory(groupURL.path as NSString)
+          _ = MobileSetAppGroupDirectory(groupURL.path)
           MobileSetPacketFlowBridge(bridge)
           MobileSetSocketProtector(protector)
+          DispatchQueue.main.async {
+            self.startReadPacketsLoop(lifecycleID: lifecycleID)
+          }
 
           let tunConfig = self.injectTunConfig(configContent)
-          let safeConfig = NSString(string: tunConfig)
+          let configURL = groupURL.appendingPathComponent("config.yaml", isDirectory: false)
+          do {
+            try tunConfig.write(to: configURL, atomically: true, encoding: .utf8)
+          } catch {
+            MobileClearPacketFlowBridge()
+            MobileClearSocketProtector()
+            self.endTunnelLifecycle()
+            self.bridge = nil
+            self.socketProtector = nil
+            self.finishStart(
+              completionHandler,
+              error: NSError(
+                domain: "Tunnel",
+                code: -6,
+                userInfo: [NSLocalizedDescriptionKey: "failed to persist config.yaml: \(error.localizedDescription)"]
+              )
+            )
+            return
+          }
           var startError: NSError?
-          let started = withExtendedLifetime(safeConfig) {
-            MobileStartWithMemory(safeConfig, &startError)
+          let started = withExtendedLifetime(tunConfig) {
+            MobileMobileStartWithMemory(tunConfig, &startError)
           }
           guard started else {
             MobileStop()
@@ -230,9 +225,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
           self.markCoreRunning(lifecycleID: lifecycleID)
           self.startPathMonitor(lifecycleID: lifecycleID)
-          DispatchQueue.main.async {
-            self.startReadPacketsLoop(lifecycleID: lifecycleID)
-          }
           self.finishStart(completionHandler, error: nil)
         }
       }
@@ -309,7 +301,7 @@ tun:
     mihomoQueue.async {
       guard self.isCoreRunning() else { return }
       self.runWithMihomoAutoreleasePool {
-        MobileSleep()
+        MobileResetNetwork()
       }
     }
     completionHandler()
@@ -319,9 +311,7 @@ tun:
     mihomoQueue.async {
       guard self.isCoreRunning() else { return }
       self.runWithMihomoAutoreleasePool {
-        if !MobileWake() {
-          _ = MobileRestartTunnelForNetworkChange()
-        }
+        MobileResetNetwork()
       }
     }
   }
@@ -353,7 +343,7 @@ tun:
 
         switch action {
         case "changeMode":
-          let mode = (object["mode"] as? String ?? "rule") as NSString
+          let mode = object["mode"] as? String ?? "rule"
           MobileSetMode(mode)
         case "getMode":
           response["value"] = self.mobileGetModeString()
@@ -364,12 +354,12 @@ tun:
           let proxiesJson = self.mobileGetProxiesString()
           response["value"] = self.extractSelectedProxy(groupName: groupName, proxiesJson: proxiesJson) ?? ""
         case "urlTest":
-          let name = (object["name"] as? String ?? "GLOBAL") as NSString
+          let name = object["name"] as? String ?? "GLOBAL"
           response["value"] = self.mobileTestLatencyString(name)
         case "selectProxy":
           let groupName = object["groupName"] as? String ?? "GLOBAL"
           let proxyName = object["proxyName"] as? String ?? ""
-          response["ok"] = MobileSelectProxy(groupName as NSString, proxyName as NSString)
+          response["ok"] = MobileSelectProxy(groupName, proxyName)
         case "reloadConfig":
           MobileForceUpdateConfig("config.yaml")
         case "getTraffic":
@@ -423,7 +413,7 @@ tun:
       return selected.data(using: .utf8)
     }
     if message.hasPrefix("urlTest|") {
-      let name = String(message.dropFirst("urlTest|".count)) as NSString
+      let name = String(message.dropFirst("urlTest|".count))
       return mobileTestLatencyString(name).data(using: .utf8)
     }
     return nil
@@ -431,34 +421,20 @@ tun:
 
   private func mobileGetModeString() -> String {
     return autoreleasepool {
-      let value = MobileGetMode()
-      return copySwiftString(value)
+      return MobileGetMode() ?? ""
     }
   }
 
   private func mobileGetProxiesString() -> String {
     return autoreleasepool {
-      let value = MobileGetProxies()
-      return copySwiftString(value)
+      return MobileGetProxies() ?? ""
     }
   }
 
-  private func mobileTestLatencyString(_ proxyName: NSString) -> String {
+  private func mobileTestLatencyString(_ proxyName: String) -> String {
     return autoreleasepool {
-      let value = MobileTestLatency(proxyName)
-      return copySwiftString(value)
+      return MobileTestLatency(proxyName) ?? ""
     }
-  }
-
-  private func copySwiftString(_ unmanagedValue: Unmanaged<AnyObject>?) -> String {
-    guard let unmanagedValue else { return "" }
-    guard let value = unmanagedValue.takeUnretainedValue() as? NSString else { return "" }
-    let maxLength = value.lengthOfBytes(using: String.Encoding.utf8.rawValue) + 1
-    var buffer = [CChar](repeating: 0, count: maxLength)
-    if value.getCString(&buffer, maxLength: maxLength, encoding: String.Encoding.utf8.rawValue) {
-      return String(cString: buffer)
-    }
-    return String(value)
   }
 
   private func extractSelectedProxy(groupName: String, proxiesJson: String) -> String? {
@@ -526,7 +502,7 @@ tun:
       self.mihomoQueue.async {
         guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
         self.runWithMihomoAutoreleasePool {
-          _ = MobileRestartTunnelForNetworkChange()
+          MobileResetNetwork()
         }
       }
     }

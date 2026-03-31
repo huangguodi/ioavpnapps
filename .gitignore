@@ -61,3 +61,7 @@ app.*.map.json
 *.jks
 *.mobileprovision
 /android/key.properties
+
+# Local reference/source worktrees
+/clashmi-main/
+/mihomo-clash/

@@ -3,15 +3,6 @@ import UIKit
 import Darwin
 import NetworkExtension
 
-@_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
-@_silgen_name("MobileStop") private func MobileStop()
-@_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
-@_silgen_name("MobileGetMode") private func MobileGetMode() -> NSString
-@_silgen_name("MobileGetProxies") private func MobileGetProxies() -> NSString
-@_silgen_name("MobileSelectProxy") private func MobileSelectProxy(_ groupName: NSString?, _ proxyName: NSString?) -> Bool
-@_silgen_name("MobileTestLatency") private func MobileTestLatency(_ proxyName: NSString?) -> NSString
-@_silgen_name("MobileForceUpdateConfig") private func MobileForceUpdateConfig(_ configFileName: NSString?)
-
 final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   private var sink: FlutterEventSink?
   private var timer: Timer?
@@ -394,7 +385,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     guard
       let until = deferStatusQueriesUntil,
       until.timeIntervalSinceNow > 0,
-      method == "getMode" || method == "getProxies" || method == "getSelectedProxy"
+      method == "getMode" || method == "getProxies" || method == "getSelectedProxy" || method == "getTraffic"
     else {
       execute()
       return
@@ -844,27 +835,30 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   }
 
   private func sendProviderCommand(_ command: [String: Any], completion: @escaping ([String: Any]) -> Void) {
-    loadTunnelManager { manager, _ in
-      guard
-        let session = manager?.connection as? NETunnelProviderSession,
-        let data = try? JSONSerialization.data(withJSONObject: command)
-      else {
-        completion([:])
-        return
-      }
-      do {
-        try session.sendProviderMessage(data) { responseData in
-          guard
-            let responseData = responseData,
-            let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
-          else {
-            completion([:])
-            return
-          }
-          completion(object)
+    let method = command["action"] as? String ?? ""
+    performAfterPostStartDelayIfNeeded(method: method) {
+      self.loadTunnelManager { manager, _ in
+        guard
+          let session = manager?.connection as? NETunnelProviderSession,
+          let data = try? JSONSerialization.data(withJSONObject: command)
+        else {
+          completion([:])
+          return
         }
-      } catch {
-        completion([:])
+        do {
+          try session.sendProviderMessage(data) { responseData in
+            guard
+              let responseData = responseData,
+              let object = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any]
+            else {
+              completion([:])
+              return
+            }
+            completion(object)
+          }
+        } catch {
+          completion([:])
+        }
       }
     }
   }
