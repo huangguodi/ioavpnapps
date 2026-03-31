@@ -300,14 +300,20 @@ tun:
 
   private func handleLightweightAppMessage(_ message: String) -> Data? {
     if message == "getMode" {
-      return (MobileGetMode() as String).data(using: .utf8)
+      let mode = MobileGetMode() as String
+      if let userDefaults = UserDefaults(suiteName: defaultAppGroup) {
+        userDefaults.set(mode, forKey: "vpn_mode_data")
+        userDefaults.synchronize()
+        return "shared_mem".data(using: .utf8)
+      }
+      return mode.data(using: .utf8)
     }
     if message == "getProxies" {
       let proxiesJson = MobileGetProxies() as String
-      if let home = homeURL {
-        let fileURL = home.appendingPathComponent("proxies.json")
-        try? proxiesJson.write(to: fileURL, atomically: true, encoding: .utf8)
-        return "file://\(fileURL.path)".data(using: .utf8)
+      if let userDefaults = UserDefaults(suiteName: defaultAppGroup) {
+        userDefaults.set(proxiesJson, forKey: "vpn_proxies_data")
+        userDefaults.synchronize()
+        return "shared_mem".data(using: .utf8)
       }
       return proxiesJson.data(using: .utf8)
     }
@@ -315,6 +321,12 @@ tun:
       let groupName = String(message.dropFirst("getSelectedProxy|".count))
       let proxiesJson = MobileGetProxies() as String
       let selected = extractSelectedProxy(groupName: groupName, proxiesJson: proxiesJson) ?? ""
+      
+      if let userDefaults = UserDefaults(suiteName: defaultAppGroup) {
+        userDefaults.set(selected, forKey: "vpn_selected_proxy_data")
+        userDefaults.synchronize()
+        return "shared_mem".data(using: .utf8)
+      }
       return selected.data(using: .utf8)
     }
     if message.hasPrefix("urlTest|") {

@@ -232,8 +232,20 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           }
       } else if call.method == "getMode" || call.method == "getModeNative" {
           self.sendProviderStringMessage("getMode") { value in
-            let mode = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            result((mode?.isEmpty ?? true) ? nil : mode)
+            guard let val = value else {
+              result(nil)
+              return
+            }
+            if val == "shared_mem" {
+              if let userDefaults = UserDefaults(suiteName: self.appGroupIdentifier),
+                 let mode = userDefaults.string(forKey: "vpn_mode_data") {
+                result(mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+              } else {
+                result(nil)
+              }
+            } else {
+              result(val.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+            }
           }
       } else if call.method == "getProxies" {
           self.sendProviderStringMessage("getProxies") { value in
@@ -241,7 +253,14 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
               result("{}")
               return
             }
-            if val.hasPrefix("file://") {
+            if val == "shared_mem" {
+              if let userDefaults = UserDefaults(suiteName: self.appGroupIdentifier),
+                 let content = userDefaults.string(forKey: "vpn_proxies_data") {
+                result(content)
+              } else {
+                result("{}")
+              }
+            } else if val.hasPrefix("file://") {
               let path = String(val.dropFirst(7))
               self.fileIOQueue.async {
                 do {
@@ -303,8 +322,20 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             return
           }
           self.sendProviderStringMessage("getSelectedProxy|\(group)") { value in
-            let selected = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-            result((selected?.isEmpty ?? true) ? nil : selected)
+            guard let val = value else {
+              result(nil)
+              return
+            }
+            if val == "shared_mem" {
+              if let userDefaults = UserDefaults(suiteName: self.appGroupIdentifier),
+                 let selected = userDefaults.string(forKey: "vpn_selected_proxy_data") {
+                result(selected.trimmingCharacters(in: .whitespacesAndNewlines))
+              } else {
+                result(nil)
+              }
+            } else {
+              result(val.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
           }
       } else if call.method == "reloadConfig" {
           self.sendProviderCommand(["action": "reloadConfig"]) { resp in
