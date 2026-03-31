@@ -3,6 +3,7 @@ import NetworkExtension
 import Network
 
 @_silgen_name("MobileMihomoWarmup") private func MihomoWarmup()
+@_silgen_name("MobileMobileStartWithMemory") private func MobileStartWithMemory(_ cfgStr: NSString?)
 @_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
 @_silgen_name("MobileStop") private func MobileStop()
 @_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
@@ -24,8 +25,6 @@ import Network
 @_silgen_name("MobileClearSocketProtector") private func MobileClearSocketProtector()
 @_silgen_name("MobileSleep") private func MobileSleep()
 @_silgen_name("MobileWake") private func MobileWake() -> Bool
-
-import Mobile
 
 final class PacketFlowBridgeAdapter: NSObject {
   private let packetFlow: NEPacketTunnelFlow
@@ -171,7 +170,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       
       self.mihomoQueue.async {
         let tunConfig = self.injectTunConfig(configContent)
-        MobileMobileStartWithMemory(tunConfig)
+        
+        // 由于 gomobile 将 string 映射为 NSString，必须保证传给底层的不是临时变量
+        // NSString(string:) 会在堆上分配一个新的 NSString 对象
+        let safeConfig = NSString(string: tunConfig)
+        MobileStartWithMemory(safeConfig)
       }
       
       self.startPathMonitor()
