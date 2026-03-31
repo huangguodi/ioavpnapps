@@ -107,6 +107,10 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   private let tunnelStartRetryDelay: TimeInterval = 1.0
   private let tunnelStartMaxAttempts = 2
   private var deferStatusQueriesUntil: Date?
+  
+  private var cachedProxiesJson: String?
+  private var lastProxiesFileModification: Date?
+  private let fileIOQueue = DispatchQueue(label: "com.accelerator.tg.fileio", qos: .userInitiated)
 
   override func application(
     _ application: UIApplication,
@@ -239,10 +243,26 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             }
             if val.hasPrefix("file://") {
               let path = String(val.dropFirst(7))
-              if let content = try? String(contentsOfFile: path, encoding: .utf8) {
-                result(content)
-              } else {
-                result("{}")
+              self.fileIOQueue.async {
+                do {
+                  let attrs = try FileManager.default.attributesOfItem(atPath: path)
+                  let modDate = attrs[.modificationDate] as? Date
+                  
+                  if let cached = self.cachedProxiesJson,
+                     let lastMod = self.lastProxiesFileModification,
+                     let currentMod = modDate,
+                     lastMod == currentMod {
+                    DispatchQueue.main.async { result(cached) }
+                    return
+                  }
+                  
+                  let content = try String(contentsOfFile: path, encoding: .utf8)
+                  self.cachedProxiesJson = content
+                  self.lastProxiesFileModification = modDate
+                  DispatchQueue.main.async { result(content) }
+                } catch {
+                  DispatchQueue.main.async { result("{}") }
+                }
               }
             } else {
               result(val)
