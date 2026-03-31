@@ -419,6 +419,8 @@
 				MARKETING_VERSION = 1.0.1;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				OTHER_CFLAGS = "-fapplication-extension";
 			};
 			name = Debug;
 		};
@@ -450,6 +452,8 @@
 				SKIP_INSTALL = YES;
 				MARKETING_VERSION = 1.0.1;
 				SWIFT_VERSION = 5.0;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				OTHER_CFLAGS = "-fapplication-extension";
 			};
 			name = Release;
 		};
@@ -481,6 +485,8 @@
 				SKIP_INSTALL = YES;
 				MARKETING_VERSION = 1.0.1;
 				SWIFT_VERSION = 5.0;
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				OTHER_CFLAGS = "-fapplication-extension";
 			};
 			name = Profile;
 		};

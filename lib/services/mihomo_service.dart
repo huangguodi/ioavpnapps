@@ -5,7 +5,6 @@ import 'dart:io';
 import 'package:app/core/constants.dart';
 import 'package:app/core/logger.dart';
 import 'package:app/services/api_service.dart'; // Import ApiService
-import 'package:app/services/hot_update_service.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -59,6 +58,7 @@ class MihomoService {
   bool _isDaemonCheckInFlight = false;
   DateTime? _deferNonCriticalStatusQueriesUntil;
   DateTime? _lastNativeStartAt;
+  DateTime? _lastStartCallTime;
 
   // Cache proxies to avoid first-time lag
   Map<String, dynamic>? _cachedProxies;
@@ -306,6 +306,15 @@ class MihomoService {
 
   Future<String?> start({required String subscribeUrl}) async {
     try {
+      if (Platform.isIOS) {
+        final now = DateTime.now();
+        if (_lastStartCallTime != null && now.difference(_lastStartCallTime!) < const Duration(milliseconds: 300)) {
+          AppLogger.d("MihomoService: start debounced");
+          return null;
+        }
+        _lastStartCallTime = now;
+      }
+
       final normalizedUrl = _normalizeSubscribeUrl(subscribeUrl);
       if (normalizedUrl == null) {
         return "Invalid subscribe url";
@@ -336,6 +345,7 @@ class MihomoService {
         if (!granted) {
           return "VPN permission denied";
         }
+        return await _startNative('', configContent);
       }
 
       final configPath = await _saveConfig(configContent);

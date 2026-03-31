@@ -202,18 +202,36 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       } else if call.method == "getServerUrlKey" {
           result(self.nativeServerUrlKey())
       } else if call.method == "startMihomo" || call.method == "start" {
-          guard let args = call.arguments as? [String: Any],
-                let configPath = args["configPath"] as? String else {
-            result(FlutterError(code: "INVALID_ARGUMENT", message: "configPath is required", details: nil))
+          guard let args = call.arguments as? [String: Any] else {
+            result(FlutterError(code: "INVALID_ARGUMENT", message: "arguments missing", details: nil))
             return
           }
-          let configContent = (args["configContent"] as? String) ?? (try? String(contentsOfFile: configPath)) ?? ""
-          self.startTunnel(configContent: configContent) { error in
-            if let error = error {
-              result(FlutterError(code: "START_FAILED", message: self.describeError(error), details: nil))
+          let configContent = (args["configContent"] as? String) ?? ""
+          if configContent.isEmpty {
+            if let configPath = args["configPath"] as? String, !configPath.isEmpty {
+                // Fallback if needed, though we expect configContent
             } else {
-              result(nil)
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "configContent is required", details: nil))
+                return
             }
+          }
+          
+          self.fileIOQueue.async {
+              if let userDefaults = UserDefaults(suiteName: self.appGroupIdentifier) {
+                  userDefaults.set(configContent, forKey: "vpn_config_content")
+                  userDefaults.set(1, forKey: "vpn_config_status") // 1 = has config
+                  userDefaults.synchronize()
+              }
+              
+              DispatchQueue.main.async {
+                  self.startTunnel(configContent: configContent) { error in
+                      if let error = error {
+                          result(FlutterError(code: "START_FAILED", message: self.describeError(error), details: nil))
+                      } else {
+                          result(nil)
+                      }
+                  }
+              }
           }
       } else if call.method == "stopMihomo" || call.method == "stop" {
           self.stopTunnel {
@@ -490,11 +508,6 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       proto.providerConfiguration = [
         "appGroup": self.appGroupIdentifier
       ]
-      
-      if let userDefaults = UserDefaults(suiteName: self.appGroupIdentifier) {
-        userDefaults.set(configContent, forKey: "vpn_config_content")
-        userDefaults.synchronize()
-      }
       
       manager.localizedDescription = self.tunnelDescription
       manager.protocolConfiguration = proto

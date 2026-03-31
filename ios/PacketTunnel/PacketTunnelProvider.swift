@@ -2,6 +2,8 @@ import Foundation
 import NetworkExtension
 import Network
 
+@_silgen_name("MobileStartWithMemory") private func MobileStartWithMemory(_ configC: UnsafeMutablePointer<CChar>?)
+@_silgen_name("MihomoWarmup") private func MihomoWarmup()
 @_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
 @_silgen_name("MobileStop") private func MobileStop()
 @_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
@@ -92,7 +94,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private var lastPathRestartAt = Date.distantPast
   private let mihomoQueue = DispatchQueue(label: "com.accelerator.tg.mihomo.core", qos: .userInitiated)
 
+  override init() {
+    super.init()
+    MihomoWarmup()
+  }
+
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+    completionHandler(nil)
+    
+    mihomoQueue.async { [weak self] in
+      guard let self = self else { return }
+      self.performStartTunnel()
+    }
+  }
+
+  private func performStartTunnel() {
     let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
     let appGroup = providerConfig["appGroup"] as? String ?? defaultAppGroup
     
@@ -100,25 +116,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     if let userDefaults = UserDefaults(suiteName: appGroup),
        let savedConfig = userDefaults.string(forKey: "vpn_config_content") {
       configContent = savedConfig
+      // 配置读取后清空，不留冗余数据
+      userDefaults.removeObject(forKey: "vpn_config_content")
+      userDefaults.synchronize()
     } else {
       configContent = ""
     }
 
+    if configContent.isEmpty {
+      return
+    }
+
     guard let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else {
-      completionHandler(NSError(domain: "Tunnel", code: -2, userInfo: [NSLocalizedDescriptionKey: "invalid app group"]))
       return
     }
 
     homeURL = groupURL
-    let configURL = groupURL.appendingPathComponent("config.yaml")
-
-    do {
-      try FileManager.default.createDirectory(at: groupURL, withIntermediateDirectories: true)
-      try injectTunConfig(configContent).write(to: configURL, atomically: true, encoding: .utf8)
-    } catch {
-      completionHandler(error)
-      return
-    }
 
     let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: ipv4Address)
     let ipv4Settings = NEIPv4Settings(addresses: [ipv4Address], subnetMasks: [ipv4SubnetMask])
@@ -137,15 +150,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     setTunnelNetworkSettings(settings) { [weak self] error in
       guard let self else { return }
-      if let error = error {
-        completionHandler(error)
+      if error != nil {
         return
       }
 
-      guard MobileSetAppGroupDirectory(groupURL.path as NSString) else {
-        completionHandler(NSError(domain: "Tunnel", code: -3, userInfo: [NSLocalizedDescriptionKey: "set app group directory failed"]))
-        return
-      }
+      _ = MobileSetAppGroupDirectory(groupURL.path as NSString)
 
       let bridge = PacketFlowBridgeAdapter(packetFlow: self.packetFlow) { message in
         self.cancelTunnelWithError(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: message]))
@@ -159,13 +168,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       
       self.startReadPacketsLoop()
       
-      // Dispatch heavy CGO init to a background queue to avoid Watchdog SIGABRT
       self.mihomoQueue.async {
-        MobileStart(groupURL.path as NSString, "config.yaml")
+        do {
+          var tunConfig = self.injectTunConfig(configContent)
+          tunConfig.withCString { cString in
+            MobileStartWithMemory(UnsafeMutablePointer(mutating: cString))
+          }
+        } catch {
+          // ignore error to prevent crash
+        }
       }
       
       self.startPathMonitor()
-      completionHandler(nil)
     }
   }
 

@@ -59,6 +59,11 @@ FOUNDATION_EXPORT NSString* _Nonnull MobileGetMode(void);
 
 FOUNDATION_EXPORT NSString* _Nonnull MobileGetProxies(void);
 
+FOUNDATION_EXPORT void MobileMihomoWarmup(void);
+
+// skipped function MobileStartWithMemory with unsupported parameter or return types
+
+
 FOUNDATION_EXPORT MobilePacketFlowPacket* _Nullable MobileNewPacketFlowPacket(NSData* _Nullable data, int64_t af);
 
 FOUNDATION_EXPORT NSString* _Nonnull MobileProxyNames(void);
