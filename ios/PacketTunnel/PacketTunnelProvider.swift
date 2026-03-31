@@ -395,22 +395,31 @@ tun:
   private func mobileGetModeString() -> String {
     return autoreleasepool {
       let value = MobileGetMode()
-      return String(value)
+      return copySwiftString(value)
     }
   }
 
   private func mobileGetProxiesString() -> String {
     return autoreleasepool {
       let value = MobileGetProxies()
-      return String(value)
+      return copySwiftString(value)
     }
   }
 
   private func mobileTestLatencyString(_ proxyName: NSString) -> String {
     return autoreleasepool {
       let value = MobileTestLatency(proxyName)
-      return String(value)
+      return copySwiftString(value)
     }
+  }
+
+  private func copySwiftString(_ value: NSString) -> String {
+    let maxLength = value.lengthOfBytes(using: String.Encoding.utf8.rawValue) + 1
+    var buffer = [CChar](repeating: 0, count: maxLength)
+    if value.getCString(&buffer, maxLength: maxLength, encoding: String.Encoding.utf8.rawValue) {
+      return String(cString: buffer)
+    }
+    return String(value)
   }
 
   private func extractSelectedProxy(groupName: String, proxiesJson: String) -> String? {
