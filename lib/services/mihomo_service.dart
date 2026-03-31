@@ -29,6 +29,7 @@ class MihomoService {
   static const Duration _iosDaemonCheckInitialDelay = Duration(seconds: 20);
   static const Duration _iosRunningGraceWindow = Duration(seconds: 45);
   static const Duration _startupReadyProbeTimeout = Duration(milliseconds: 900);
+  static const Duration _iosStartupReadyProbeTimeout = Duration(milliseconds: 2500);
   static const Duration _startupReadyPollInterval = Duration(milliseconds: 350);
   static final MihomoService _instance = MihomoService._internal();
 
@@ -602,17 +603,11 @@ class MihomoService {
     try {
       final bool? result = await _channel.invokeMethod('isRunning');
       var resolved = result ?? false;
-      if (Platform.isIOS && resolved) {
-        final lastNativeStartAt = _lastNativeStartAt;
-        final withinGraceWindow =
-            _isRunning &&
-            lastNativeStartAt != null &&
-            DateTime.now().difference(lastNativeStartAt) <=
-                _iosRunningGraceWindow;
-        if (withinGraceWindow) {
-          // Grace window does not mean it's ready, but it means it's running.
-          resolved = true;
-        }
+      // In iOS, the native channel strictly checks the NEVPNStatus (.connected, .connecting, .reasserting).
+      // This is a reliable system-level state. Do not artificially fail it just because of grace windows.
+      if (Platform.isIOS) {
+        _cacheRunningState(resolved);
+        return resolved;
       }
       _cacheRunningState(resolved);
       return resolved;
@@ -738,7 +733,7 @@ class MihomoService {
       if (Platform.isIOS) {
         final running = await checkIsRunning(forceRefresh: true);
         if (running) {
-          final mode = await probeMode(timeout: _startupReadyProbeTimeout);
+          final mode = await probeMode(timeout: _iosStartupReadyProbeTimeout);
           if (mode != null && mode.isNotEmpty) {
             _cacheRunningState(true);
             return true;
