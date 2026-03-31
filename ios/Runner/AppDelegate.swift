@@ -284,6 +284,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
                 }
               }
             } else {
+              // Fallback to original value if it's somehow returned directly
               result(val)
             }
           }
