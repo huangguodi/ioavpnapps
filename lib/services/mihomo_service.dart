@@ -588,7 +588,7 @@ class MihomoService {
     try {
       final bool? result = await _channel.invokeMethod('isRunning');
       var resolved = result ?? false;
-      if (Platform.isIOS && !resolved) {
+      if (Platform.isIOS && resolved) {
         final lastNativeStartAt = _lastNativeStartAt;
         final withinGraceWindow =
             _isRunning &&
@@ -596,6 +596,7 @@ class MihomoService {
             DateTime.now().difference(lastNativeStartAt) <=
                 _iosRunningGraceWindow;
         if (withinGraceWindow) {
+          // Grace window does not mean it's ready, but it means it's running.
           resolved = true;
         }
       }
@@ -716,25 +717,16 @@ class MihomoService {
   }
 
   Future<bool> waitUntilReady({
-    Duration timeout = const Duration(seconds: 8),
+    Duration timeout = const Duration(seconds: 15),
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       if (Platform.isIOS) {
         final running = await checkIsRunning(forceRefresh: true);
-        final mode = await probeMode(timeout: _startupReadyProbeTimeout);
-        if (mode != null && mode.isNotEmpty) {
-          _cacheRunningState(true);
-          return true;
-        }
         if (running) {
-          final lastNativeStartAt = _lastNativeStartAt;
-          final withinGraceWindow =
-              _isRunning &&
-              lastNativeStartAt != null &&
-              DateTime.now().difference(lastNativeStartAt) <=
-                  _iosRunningGraceWindow;
-          if (!withinGraceWindow) {
+          final mode = await probeMode(timeout: _startupReadyProbeTimeout);
+          if (mode != null && mode.isNotEmpty) {
+            _cacheRunningState(true);
             return true;
           }
         }

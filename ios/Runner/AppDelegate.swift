@@ -464,11 +464,31 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
                 )
                 return
               }
-              self.startTunnel(
-                configContent: configContent,
-                attempt: attempt,
-                completion: completion
-              )
+              // 如果变成 .invalid 或者是 .disconnected，应该继续往下执行真正的 startVPNTunnel
+              do {
+                guard let session = readyManager.connection as? NETunnelProviderSession else {
+                  completion(NSError(domain: "Tunnel", code: -3, userInfo: [NSLocalizedDescriptionKey: "invalid tunnel session"]))
+                  return
+                }
+                try session.startVPNTunnel()
+                self.waitTunnelConnected(manager: readyManager, retries: 8) { error in
+                  self.completeTunnelStart(
+                    manager: readyManager,
+                    configContent: configContent,
+                    attempt: attempt,
+                    error: error,
+                    completion: completion
+                  )
+                }
+              } catch {
+                self.completeTunnelStart(
+                  manager: readyManager,
+                  configContent: configContent,
+                  attempt: attempt,
+                  error: self.wrapError(stage: "startVPNTunnel", error: error),
+                  completion: completion
+                )
+              }
             }
             return
           }
@@ -510,7 +530,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       let activeManager = refreshedManager ?? manager
       let status = activeManager.connection.status
       self.cachedTunnelManager = activeManager
-      if status != .connecting && status != .disconnecting {
+      if status != .connecting && status != .disconnecting && status != .invalid {
         completion(activeManager, status)
         return
       }
