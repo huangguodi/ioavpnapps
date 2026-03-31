@@ -102,7 +102,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     do {
       try FileManager.default.createDirectory(at: groupURL, withIntermediateDirectories: true)
-      try configContent.write(to: configURL, atomically: true, encoding: .utf8)
+      try injectTunConfig(configContent).write(to: configURL, atomically: true, encoding: .utf8)
     } catch {
       completionHandler(error)
       return
@@ -145,6 +145,49 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       self.startPathMonitor()
       completionHandler(nil)
     }
+  }
+
+  private func injectTunConfig(_ configContent: String) -> String {
+    let tunBlock = """
+tun:
+  enable: true
+  stack: gvisor
+  auto-route: false
+  auto-detect-interface: false
+  auto-redirect: false
+  mtu: 1400
+  dns-hijack:
+    - 0.0.0.0:53
+    - "[::]:53"
+"""
+    let lines = configContent.components(separatedBy: .newlines)
+    var output: [String] = []
+    var index = 0
+    var replaced = false
+    while index < lines.count {
+      let line = lines[index]
+      if !replaced && line.trimmingCharacters(in: .whitespacesAndNewlines) == "tun:" {
+        output.append(contentsOf: tunBlock.components(separatedBy: .newlines))
+        replaced = true
+        index += 1
+        while index < lines.count {
+          let next = lines[index]
+          if !next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+              !next.hasPrefix(" ") &&
+              !next.hasPrefix("\t") {
+            break
+          }
+          index += 1
+        }
+        continue
+      }
+      output.append(line)
+      index += 1
+    }
+    if !replaced {
+      return configContent.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + tunBlock + "\n"
+    }
+    return output.joined(separator: "\n")
   }
 
   override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {

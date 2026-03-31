@@ -332,9 +332,11 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       method = message
     }
     performAfterPostStartDelayIfNeeded(method: method) {
-      self.loadTunnelManager { manager, _ in
+      self.loadTunnelManager(forceRefresh: true) { manager, _ in
+        let status = manager?.connection.status ?? .invalid
         guard
           let session = manager?.connection as? NETunnelProviderSession,
+          status == .connected || status == .reasserting,
           let data = message.data(using: .utf8)
         else {
           completion(nil)

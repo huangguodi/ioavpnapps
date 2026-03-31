@@ -26,6 +26,8 @@ class MihomoService {
     milliseconds: 900,
   );
   static const Duration _iosPostStartStatusCooldown = Duration(seconds: 2);
+  static const Duration _iosDaemonCheckInitialDelay = Duration(seconds: 20);
+  static const Duration _iosRunningGraceWindow = Duration(seconds: 45);
   static const Duration _startupReadyProbeTimeout = Duration(milliseconds: 900);
   static const Duration _startupReadyPollInterval = Duration(milliseconds: 350);
   static final MihomoService _instance = MihomoService._internal();
@@ -55,6 +57,7 @@ class MihomoService {
   bool _isDaemonCheckActive = false;
   bool _isDaemonCheckInFlight = false;
   DateTime? _deferNonCriticalStatusQueriesUntil;
+  DateTime? _lastNativeStartAt;
 
   // Cache proxies to avoid first-time lag
   Map<String, dynamic>? _cachedProxies;
@@ -406,6 +409,7 @@ class MihomoService {
       } else {
         _cacheRunningState(true);
       }
+      _lastNativeStartAt = DateTime.now();
       await _restoreRoutingFromConfig(configContent);
       final restoredMode = _extractModeFromConfig(configContent);
       if (restoredMode != null) {
@@ -585,8 +589,15 @@ class MihomoService {
       final bool? result = await _channel.invokeMethod('isRunning');
       var resolved = result ?? false;
       if (Platform.isIOS && !resolved) {
-        final mode = await probeMode(timeout: const Duration(milliseconds: 1200));
-        resolved = mode != null && mode.isNotEmpty;
+        final lastNativeStartAt = _lastNativeStartAt;
+        final withinGraceWindow =
+            _isRunning &&
+            lastNativeStartAt != null &&
+            DateTime.now().difference(lastNativeStartAt) <=
+                _iosRunningGraceWindow;
+        if (withinGraceWindow) {
+          resolved = true;
+        }
       }
       _cacheRunningState(resolved);
       return resolved;
@@ -710,6 +721,10 @@ class MihomoService {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       if (Platform.isIOS) {
+        final running = await checkIsRunning(forceRefresh: true);
+        if (running) {
+          return true;
+        }
         final mode = await probeMode(timeout: _startupReadyProbeTimeout);
         if (mode != null && mode.isNotEmpty) {
           _cacheRunningState(true);
@@ -1149,7 +1164,9 @@ class MihomoService {
       owner: 'mihomo_service',
       active: true,
     );
-    final delay = initial ? _initialDaemonCheckDelay : _daemonCheckInterval;
+    final delay = initial
+        ? (Platform.isIOS ? _iosDaemonCheckInitialDelay : _initialDaemonCheckDelay)
+        : _daemonCheckInterval;
     _daemonTimer = Timer(delay, () async {
       await _runDaemonCheckTick();
       if (_isDaemonCheckActive) {
