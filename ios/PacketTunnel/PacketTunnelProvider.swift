@@ -170,11 +170,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       
       self.mihomoQueue.async {
         let tunConfig = self.injectTunConfig(configContent)
-        
-        // 由于 gomobile 将 string 映射为 NSString，必须保证传给底层的不是临时变量
-        // NSString(string:) 会在堆上分配一个新的 NSString 对象
-        let safeConfig = NSString(string: tunConfig)
-        MobileStartWithMemory(safeConfig)
+        MobileStartWithMemory(tunConfig as NSString)
       }
       
       self.startPathMonitor()
