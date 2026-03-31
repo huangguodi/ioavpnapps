@@ -87,7 +87,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   private let tunnelBundleIdentifier = "com.xiangyu.clash.packettunnel"
-  private let tunnelDescription = "CarbonLAM Tunnel"
+  private let tunnelDescription = "Accelerator"
   private let appGroupIdentifier = "group.com.xiangyu.clash"
   private var trafficStreamHandler: TunnelTrafficStreamHandler?
   private var channelsConfigured = false
@@ -496,7 +496,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 
       let proto = NETunnelProviderProtocol()
       proto.providerBundleIdentifier = self.tunnelBundleIdentifier
-      proto.serverAddress = "CarbonLAM"
+      proto.serverAddress = "127.0.0.1"
       proto.disconnectOnSleep = false
       proto.providerConfiguration = [
         "appGroup": self.appGroupIdentifier
@@ -799,7 +799,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       }
       let proto = NETunnelProviderProtocol()
       proto.providerBundleIdentifier = self.tunnelBundleIdentifier
-      proto.serverAddress = "CarbonLAM"
+      proto.serverAddress = "127.0.0.1"
       proto.disconnectOnSleep = false
       proto.providerConfiguration = [
         "appGroup": self.appGroupIdentifier
