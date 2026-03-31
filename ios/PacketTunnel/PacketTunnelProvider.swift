@@ -1,8 +1,9 @@
 import Foundation
 import NetworkExtension
 import Network
-import Mobile
 
+@_silgen_name("MobileMihomoWarmup") private func MihomoWarmup()
+@_silgen_name("MobileMobileStartWithMemory") private func MobileStartWithMemory(_ cfgStr: NSString?)
 @_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
 @_silgen_name("MobileStop") private func MobileStop()
 @_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
@@ -95,7 +96,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
   override init() {
     super.init()
-    MobileMihomoWarmup()
+    MihomoWarmup()
   }
 
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -168,8 +169,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       self.startReadPacketsLoop()
       
       self.mihomoQueue.async {
-        let tunConfig = self.injectTunConfig(configContent)
-        MobileStartWithMemory(tunConfig)
+        do {
+          let tunConfig = self.injectTunConfig(configContent)
+          MobileStartWithMemory(tunConfig as NSString)
+        }
       }
       
       self.startPathMonitor()
