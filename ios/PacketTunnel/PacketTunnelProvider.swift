@@ -60,6 +60,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let ipv4SubnetMask = "255.255.255.252"
   private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
+  private let tunnelMTU = 1400
   private let dnsServers = ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888"]
   private let pathRestartThrottle: TimeInterval = 2.0
   private var bridge: PacketFlowBridgeAdapter?
@@ -140,7 +141,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     )
     ipv6Settings.includedRoutes = [NEIPv6Route.default()]
     settings.ipv6Settings = ipv6Settings
-    settings.mtu = 9000
+    settings.mtu = NSNumber(value: tunnelMTU)
     let dns = NEDNSSettings(servers: dnsServers)
     dns.matchDomains = [""]
     settings.dnsSettings = dns
@@ -240,7 +241,7 @@ tun:
   auto-route: false
   auto-detect-interface: false
   auto-redirect: false
-  mtu: 9000
+  mtu: \(tunnelMTU)
   dns-hijack:
     - 0.0.0.0:53
     - "[::]:53"
