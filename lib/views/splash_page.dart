@@ -22,6 +22,9 @@ class SplashPage extends StatefulWidget {
 class _SplashPageState extends State<SplashPage> {
   static const int _maxStartupLoginAttempts = 3;
   static const int _maxStartupHotUpdateAttempts = 3;
+  static const String _startupNetworkProbeHost = 'vpnapis.com';
+  static const Duration _startupNetworkPollInterval = Duration(seconds: 1);
+  static const Duration _startupNetworkProbeTimeout = Duration(seconds: 2);
   static const List<Duration> _startupLoginRetryDelays = [
     Duration(milliseconds: 250),
     Duration(milliseconds: 500),
@@ -30,6 +33,7 @@ class _SplashPageState extends State<SplashPage> {
   HotUpdateProgress? _lastStableHotUpdateProgress;
   bool _isClosingAfterHotUpdate = false;
   bool _isRetryingHotUpdate = false;
+  bool _isWaitingForStartupNetwork = false;
 
   @override
   void initState() {
@@ -97,88 +101,181 @@ class _SplashPageState extends State<SplashPage> {
 
   Future<bool> _runHotUpdateBeforeLogin() async {
     String? lastError;
-    for (var attempt = 0; attempt < _maxStartupHotUpdateAttempts; attempt++) {
-      try {
-        AppLogger.d('Splash: hot update attempt=${attempt + 1}');
-        final result = await HotUpdateService().performStartupUpdate(
-          onProgress: (progress) {
-            if (!mounted) return;
-            setState(() {
-              if (progress.stage != HotUpdateStage.failed) {
-                _lastStableHotUpdateProgress = progress;
+    while (mounted) {
+      await _waitForStartupNetwork(stage: '热更新');
+      if (!mounted) return false;
+      for (var attempt = 0; attempt < _maxStartupHotUpdateAttempts; attempt++) {
+        try {
+          AppLogger.d('Splash: hot update attempt=${attempt + 1}');
+          final result = await HotUpdateService().performStartupUpdate(
+            onProgress: (progress) {
+              _setHotUpdateProgress(progress);
+            },
+          );
+          if (!mounted) return false;
+          if (result.appliedUpdate ||
+              result.requiresRestart ||
+              !result.shouldContinue) {
+            AppLogger.w(
+              'Splash: hot update requires stop applied=${result.appliedUpdate} restart=${result.requiresRestart} continue=${result.shouldContinue}',
+            );
+            return false;
+          }
+          _setHotUpdateProgress(null);
+          AppLogger.d('Splash: hot update finished');
+          return true;
+        } catch (e) {
+          lastError = e.toString();
+          AppLogger.e('Splash: hot update error $lastError');
+          if (_shouldRetryStartupNetworkError(lastError)) {
+            if (attempt < _startupLoginRetryDelays.length) {
+              await Future.delayed(_startupLoginRetryDelays[attempt]);
+              if (!mounted) {
+                return false;
               }
-              _hotUpdateProgress = progress;
-            });
-          },
-        );
-        if (!mounted) return false;
-        if (result.appliedUpdate ||
-            result.requiresRestart ||
-            !result.shouldContinue) {
-          AppLogger.w(
-            'Splash: hot update requires stop applied=${result.appliedUpdate} restart=${result.requiresRestart} continue=${result.shouldContinue}',
+              continue;
+            }
+            await _showStartupNetworkWaiting(detail: '当前网络不可用，连接后将自动继续检查更新');
+            break;
+          }
+          if (!mounted) return false;
+          _setHotUpdateProgress(
+            HotUpdateProgress(
+              stage: HotUpdateStage.failed,
+              title: '热更新失败',
+              detail: lastError,
+            ),
+            rememberStable: false,
           );
           return false;
         }
-        setState(() {
-          _hotUpdateProgress = null;
-        });
-        AppLogger.d('Splash: hot update finished');
-        return true;
-      } catch (e) {
-        lastError = e.toString();
-        AppLogger.e('Splash: hot update error $lastError');
-        if (attempt < _startupLoginRetryDelays.length &&
-            _shouldRetryStartupNetworkError(lastError)) {
-          await Future.delayed(_startupLoginRetryDelays[attempt]);
-          if (!mounted) {
-            return false;
-          }
-          continue;
-        }
-        if (!mounted) return false;
-        setState(() {
-          _hotUpdateProgress ??= HotUpdateProgress(
-            stage: HotUpdateStage.failed,
-            title: '热更新失败',
-            detail: lastError ?? e.toString(),
-          );
-        });
-        return false;
       }
     }
     if (!mounted) return false;
-    setState(() {
-      _hotUpdateProgress ??= HotUpdateProgress(
+    _setHotUpdateProgress(
+      HotUpdateProgress(
         stage: HotUpdateStage.failed,
         title: '热更新失败',
         detail: lastError ?? '未知错误',
-      );
-    });
+      ),
+      rememberStable: false,
+    );
     return false;
   }
 
   Future<String?> _loginWithStartupRetry() async {
     String? lastError;
-    for (var attempt = 0; attempt < _maxStartupLoginAttempts; attempt++) {
-      try {
-        lastError = await ApiService().login();
-      } catch (e) {
-        lastError = "Exception: $e";
-      }
-      if (lastError == null || !_shouldRetryStartupNetworkError(lastError)) {
-        return lastError;
-      }
-      if (attempt >= _startupLoginRetryDelays.length) {
-        return lastError;
-      }
-      await Future.delayed(_startupLoginRetryDelays[attempt]);
+    while (mounted) {
+      await _waitForStartupNetwork(stage: '登录');
       if (!mounted) {
         return lastError;
       }
-      await ApiService().initNativeKeys();
+      for (var attempt = 0; attempt < _maxStartupLoginAttempts; attempt++) {
+        try {
+          lastError = await ApiService().login();
+        } catch (e) {
+          lastError = "Exception: $e";
+        }
+        if (lastError == null || !_shouldRetryStartupNetworkError(lastError)) {
+          return lastError;
+        }
+        if (attempt >= _startupLoginRetryDelays.length) {
+          await _showStartupNetworkWaiting(detail: '当前网络不可用，连接后将自动继续登录');
+          break;
+        }
+        await Future.delayed(_startupLoginRetryDelays[attempt]);
+        if (!mounted) {
+          return lastError;
+        }
+        await ApiService().initNativeKeys();
+      }
     }
     return lastError;
+  }
+
+  Future<void> _waitForStartupNetwork({required String stage}) async {
+    while (mounted) {
+      final available = await _hasStartupNetwork();
+      if (available) {
+        if (_isWaitingForStartupNetwork) {
+          AppLogger.d('Splash: network ready, continue $stage');
+        }
+        _clearStartupNetworkWaiting();
+        return;
+      }
+      if (!_isWaitingForStartupNetwork) {
+        AppLogger.w('Splash: waiting for network before $stage');
+      }
+      await _showStartupNetworkWaiting(detail: '请先连接网络，连接成功后将自动继续$stage');
+      await Future.delayed(_startupNetworkPollInterval);
+    }
+  }
+
+  Future<bool> _hasStartupNetwork() async {
+    SecureSocket? socket;
+    try {
+      socket = await SecureSocket.connect(
+        _startupNetworkProbeHost,
+        443,
+        timeout: _startupNetworkProbeTimeout,
+      );
+      return true;
+    } on SocketException {
+      return false;
+    } on HandshakeException {
+      return false;
+    } on TimeoutException {
+      return false;
+    } catch (e) {
+      AppLogger.w('Splash: network probe error $e');
+      return false;
+    } finally {
+      socket?.destroy();
+    }
+  }
+
+  Future<void> _showStartupNetworkWaiting({required String detail}) async {
+    _isWaitingForStartupNetwork = true;
+    if (!mounted) {
+      return;
+    }
+    _setHotUpdateProgress(
+      HotUpdateProgress(
+        stage: HotUpdateStage.idle,
+        title: '等待网络连接',
+        detail: detail,
+      ),
+      rememberStable: false,
+    );
+  }
+
+  void _clearStartupNetworkWaiting() {
+    final shouldClear =
+        _hotUpdateProgress?.stage == HotUpdateStage.idle &&
+        _hotUpdateProgress?.title == '等待网络连接';
+    _isWaitingForStartupNetwork = false;
+    if (!mounted || !shouldClear) {
+      return;
+    }
+    _setHotUpdateProgress(null);
+  }
+
+  void _setHotUpdateProgress(
+    HotUpdateProgress? progress, {
+    bool rememberStable = true,
+  }) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      if (progress != null &&
+          rememberStable &&
+          progress.stage != HotUpdateStage.failed &&
+          progress.stage != HotUpdateStage.idle) {
+        _lastStableHotUpdateProgress = progress;
+      }
+      _hotUpdateProgress = progress;
+    });
   }
 
   bool _shouldRetryStartupNetworkError(String? errorMsg) {
@@ -521,11 +618,21 @@ class _SplashPageState extends State<SplashPage> {
       // Initialize service (copy assets, MMDB, etc.)
       await MihomoService().init();
 
-      // Stop any existing instance to ensure a fresh cold start with correct ports
-      if (await MihomoService().checkIsRunning(forceRefresh: true)) {
-        AppLogger.w('Splash: existing mihomo detected, stopping first');
-        await MihomoService().stop();
-        await Future.delayed(const Duration(seconds: 1));
+      final isRunning = await MihomoService().checkIsRunning(
+        forceRefresh: true,
+      );
+      if (isRunning) {
+        AppLogger.d('Splash: reusing existing mihomo tunnel');
+        return true;
+      }
+
+      if (Platform.isIOS) {
+        final storedMode = await MihomoService().readStoredMode();
+        AppLogger.d('Splash: iOS stored mode=$storedMode');
+        if (storedMode == 'direct') {
+          AppLogger.d('Splash: skip mihomo start for direct mode');
+          return true;
+        }
       }
 
       final userInfo = ApiService().userInfo;

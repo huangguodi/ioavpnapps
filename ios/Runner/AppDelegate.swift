@@ -104,6 +104,8 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   private var isLoadingTunnelManager = false
   private var pendingTunnelManagerCompletions: [(NETunnelProviderManager?, Error?) -> Void] = []
   private let postStartStatusQueryDelay: TimeInterval = 1.2
+  private let tunnelStartRetryDelay: TimeInterval = 1.0
+  private let tunnelStartMaxAttempts = 2
   private var deferStatusQueriesUntil: Date?
 
   override func application(
@@ -390,7 +392,15 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   }
 
   private func startTunnel(configContent: String, completion: @escaping (Error?) -> Void) {
-    loadTunnelManager { manager, error in
+    startTunnel(configContent: configContent, attempt: 1, completion: completion)
+  }
+
+  private func startTunnel(
+    configContent: String,
+    attempt: Int,
+    completion: @escaping (Error?) -> Void
+  ) {
+    loadTunnelManager(forceRefresh: attempt > 1) { manager, error in
       if let error = error {
         completion(error)
         return
@@ -423,17 +433,78 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             return
           }
           self.cachedTunnelManager = manager
+          let status = manager.connection.status
+          if status == .connected || status == .reasserting || status == .connecting || status == .disconnecting {
+            (manager.connection as? NETunnelProviderSession)?.stopVPNTunnel()
+            self.waitTunnelStopped(manager: manager, retries: 8) { stopped in
+              if stopped {
+                self.startTunnel(configContent: configContent, attempt: attempt, completion: completion)
+              } else {
+                self.completeTunnelStart(
+                  manager: manager,
+                  configContent: configContent,
+                  attempt: attempt,
+                  error: NSError(
+                    domain: "Tunnel",
+                    code: -6,
+                    userInfo: [NSLocalizedDescriptionKey: "failed to stop existing tunnel"]
+                  ),
+                  completion: completion
+                )
+              }
+            }
+            return
+          }
           do {
             guard let session = manager.connection as? NETunnelProviderSession else {
               completion(NSError(domain: "Tunnel", code: -3, userInfo: [NSLocalizedDescriptionKey: "invalid tunnel session"]))
               return
             }
             try session.startVPNTunnel()
-            self.waitTunnelConnected(manager: manager, retries: 8, completion: completion)
+            self.waitTunnelConnected(manager: manager, retries: 8) { error in
+              self.completeTunnelStart(
+                manager: manager,
+                configContent: configContent,
+                attempt: attempt,
+                error: error,
+                completion: completion
+              )
+            }
           } catch {
-            completion(self.wrapError(stage: "startVPNTunnel", error: error))
+            self.completeTunnelStart(
+              manager: manager,
+              configContent: configContent,
+              attempt: attempt,
+              error: self.wrapError(stage: "startVPNTunnel", error: error),
+              completion: completion
+            )
           }
         }
+      }
+    }
+  }
+
+  private func completeTunnelStart(
+    manager: NETunnelProviderManager,
+    configContent: String,
+    attempt: Int,
+    error: Error?,
+    completion: @escaping (Error?) -> Void
+  ) {
+    guard let error else {
+      completion(nil)
+      return
+    }
+    enrichTunnelStartError(manager: manager, error: error) { resolvedError in
+      guard
+        self.shouldRetryTunnelStart(error: resolvedError, attempt: attempt)
+      else {
+        completion(resolvedError)
+        return
+      }
+      (manager.connection as? NETunnelProviderSession)?.stopVPNTunnel()
+      DispatchQueue.main.asyncAfter(deadline: .now() + self.tunnelStartRetryDelay) {
+        self.startTunnel(configContent: configContent, attempt: attempt + 1, completion: completion)
       }
     }
   }
@@ -455,6 +526,100 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
       self?.waitTunnelConnected(manager: manager, retries: retries - 1, completion: completion)
+    }
+  }
+
+  private func waitTunnelStopped(
+    manager: NETunnelProviderManager,
+    retries: Int,
+    completion: @escaping (Bool) -> Void
+  ) {
+    let status = manager.connection.status
+    if status == .disconnected || status == .invalid {
+      completion(true)
+      return
+    }
+    if retries <= 0 {
+      completion(false)
+      return
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+      self?.waitTunnelStopped(manager: manager, retries: retries - 1, completion: completion)
+    }
+  }
+
+  private func shouldRetryTunnelStart(error: Error, attempt: Int) -> Bool {
+    guard attempt < tunnelStartMaxAttempts else {
+      return false
+    }
+    let nsError = error as NSError
+    if nsError.domain == "Tunnel" && (nsError.code == -4 || nsError.code == -5) {
+      return true
+    }
+    if nsError.domain == NEVPNConnectionErrorDomain {
+      return true
+    }
+    return false
+  }
+
+  private func enrichTunnelStartError(
+    manager: NETunnelProviderManager,
+    error: Error,
+    completion: @escaping (NSError) -> Void
+  ) {
+    let nsError = error as NSError
+    let statusText = tunnelStatusDescription(manager.connection.status)
+    if #available(iOS 16.0, *) {
+      manager.connection.fetchLastDisconnectError { lastError in
+        if let lastError {
+          let disconnectError = lastError as NSError
+          completion(
+            NSError(
+              domain: nsError.domain,
+              code: nsError.code,
+              userInfo: [
+                NSLocalizedDescriptionKey:
+                  "\(nsError.localizedDescription); status: \(statusText); disconnect: [\(disconnectError.domain):\(disconnectError.code)] \(disconnectError.localizedDescription)"
+              ]
+            )
+          )
+        } else {
+          completion(
+            NSError(
+              domain: nsError.domain,
+              code: nsError.code,
+              userInfo: [NSLocalizedDescriptionKey: "\(nsError.localizedDescription); status: \(statusText)"]
+            )
+          )
+        }
+      }
+      return
+    }
+    completion(
+      NSError(
+        domain: nsError.domain,
+        code: nsError.code,
+        userInfo: [NSLocalizedDescriptionKey: "\(nsError.localizedDescription); status: \(statusText)"]
+      )
+    )
+  }
+
+  private func tunnelStatusDescription(_ status: NEVPNStatus) -> String {
+    switch status {
+    case .invalid:
+      return "invalid(0)"
+    case .disconnected:
+      return "disconnected(1)"
+    case .connecting:
+      return "connecting(2)"
+    case .connected:
+      return "connected(3)"
+    case .reasserting:
+      return "reasserting(4)"
+    case .disconnecting:
+      return "disconnecting(5)"
+    @unknown default:
+      return "unknown(\(status.rawValue))"
     }
   }
 

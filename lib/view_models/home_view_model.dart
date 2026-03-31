@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:app/core/constants.dart';
 import 'package:app/core/utils.dart';
@@ -230,18 +231,42 @@ class HomeViewModel extends ChangeNotifier {
     notifyListeners();
 
     try {
-      if (!MihomoService().isRunning) {
+      final service = MihomoService();
+      final wasRunning = await service.checkIsRunning(forceRefresh: true);
+      if (Platform.isIOS && mode == ConnectionMode.off) {
+        final persisted = await service.persistMode(targetMode);
+        if (!persisted) {
+          _connectionMode = previousMode;
+          return false;
+        }
+        if (wasRunning) {
+          await service.stop();
+        }
+        _refreshGlobalNodeInfo(force: true);
+        return true;
+      }
+
+      if (!wasRunning) {
         final userInfo = ApiService().userInfo;
         final url = userInfo?['subscribe_url'];
         if (url != null) {
-          final startError = await MihomoService().start(
-            subscribeUrl: url.toString(),
-          );
+          final startError = await service.start(subscribeUrl: url.toString());
           if (startError != null) {
             _connectionMode = previousMode;
             _isSwitching = false;
             notifyListeners();
             return false;
+          }
+          if (Platform.isIOS) {
+            final ready = await service.waitUntilReady(
+              timeout: const Duration(seconds: 10),
+            );
+            if (!ready) {
+              _connectionMode = previousMode;
+              _isSwitching = false;
+              notifyListeners();
+              return false;
+            }
           }
         } else {
           _connectionMode = previousMode;
@@ -253,9 +278,9 @@ class HomeViewModel extends ChangeNotifier {
 
       await Future.delayed(const Duration(milliseconds: 50));
 
-      final success = await MihomoService().switchMode(targetMode);
+      final success = await service.switchMode(targetMode);
       if (success) {
-        final actualMode = await MihomoService().getMode();
+        final actualMode = await service.getMode(forceRefresh: true);
         final resolvedActual = _modeFromNative(actualMode);
         if (resolvedActual != mode) {
           _connectionMode = resolvedActual;

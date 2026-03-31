@@ -275,6 +275,43 @@ class MihomoService {
     }
   }
 
+  Future<bool> persistMode(String mode) async {
+    try {
+      await _updateConfigFileMode(mode);
+      final storedMode = await readStoredMode();
+      if (storedMode == mode) {
+        _cacheMode(mode);
+        return true;
+      }
+      AppLogger.w(
+        "MihomoService: persistMode verification failed. expected=$mode actual=$storedMode",
+      );
+      return false;
+    } catch (e) {
+      AppLogger.e("MihomoService: persistMode error: $e");
+      return false;
+    }
+  }
+
+  Future<String?> readStoredMode() async {
+    try {
+      final directory = await getApplicationSupportDirectory();
+      final configFile = File('${directory.path}/config.yaml');
+      if (!await configFile.exists()) {
+        return null;
+      }
+      final content = await configFile.readAsString();
+      final mode = _extractModeFromConfig(content);
+      if (mode != null && mode.isNotEmpty) {
+        _cacheMode(mode);
+      }
+      return mode;
+    } catch (e) {
+      AppLogger.e("MihomoService: readStoredMode error: $e");
+      return null;
+    }
+  }
+
   Future<String?> start({required String subscribeUrl}) async {
     try {
       final normalizedUrl = _normalizeSubscribeUrl(subscribeUrl);
