@@ -456,9 +456,14 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       proto.serverAddress = "CarbonLAM"
       proto.disconnectOnSleep = false
       proto.providerConfiguration = [
-        "configContent": configContent,
         "appGroup": self.appGroupIdentifier
       ]
+      
+      if let userDefaults = UserDefaults(suiteName: self.appGroupIdentifier) {
+        userDefaults.set(configContent, forKey: "vpn_config_content")
+        userDefaults.synchronize()
+      }
+      
       manager.localizedDescription = self.tunnelDescription
       manager.protocolConfiguration = proto
       manager.isEnabled = true

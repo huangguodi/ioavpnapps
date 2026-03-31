@@ -94,8 +94,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
     let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
-    let configContent = providerConfig["configContent"] as? String ?? ""
     let appGroup = providerConfig["appGroup"] as? String ?? defaultAppGroup
+    
+    let configContent: String
+    if let userDefaults = UserDefaults(suiteName: appGroup),
+       let savedConfig = userDefaults.string(forKey: "vpn_config_content") {
+      configContent = savedConfig
+    } else {
+      configContent = ""
+    }
 
     guard let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else {
       completionHandler(NSError(domain: "Tunnel", code: -2, userInfo: [NSLocalizedDescriptionKey: "invalid app group"]))
