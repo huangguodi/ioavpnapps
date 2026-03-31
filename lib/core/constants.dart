@@ -64,7 +64,7 @@ class AppAssets {
 }
 
 class AppConfig {
-  static const bool enableDebugOverlay = false;
+  static const bool enableDebugOverlay = true;
 }
 
 class AppPollingTaskRegistry {
@@ -116,9 +116,7 @@ class AppPollingTaskRegistry {
   }
 
   Map<String, Map<String, Object?>> snapshot() {
-    return _tasks.map(
-      (key, value) => MapEntry(key, value.toJson()),
-    );
+    return _tasks.map((key, value) => MapEntry(key, value.toJson()));
   }
 }
 

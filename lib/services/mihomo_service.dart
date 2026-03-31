@@ -26,6 +26,8 @@ class MihomoService {
     milliseconds: 900,
   );
   static const Duration _iosPostStartStatusCooldown = Duration(seconds: 2);
+  static const Duration _startupReadyProbeTimeout = Duration(milliseconds: 900);
+  static const Duration _startupReadyPollInterval = Duration(milliseconds: 350);
   static final MihomoService _instance = MihomoService._internal();
 
   factory MihomoService() {
@@ -353,6 +355,7 @@ class MihomoService {
     bool restartDaemonCheck = true,
   }) async {
     try {
+      AppLogger.d("MihomoService: Invoking native start.");
       await _channel.invokeMethod('start', {
         'configPath': configPath,
         'configContent': configContent,
@@ -360,7 +363,12 @@ class MihomoService {
 
       _isRunning = true;
       _restartCount = 0;
-      _cacheRunningState(true);
+      if (Platform.isIOS) {
+        _cachedIsRunning = null;
+        _cachedIsRunningAt = null;
+      } else {
+        _cacheRunningState(true);
+      }
       await _restoreRoutingFromConfig(configContent);
       final restoredMode = _extractModeFromConfig(configContent);
       if (restoredMode != null) {
@@ -396,9 +404,13 @@ class MihomoService {
       return null;
     } on PlatformException catch (e) {
       _isRunning = false;
+      _cachedIsRunning = null;
+      _cachedIsRunningAt = null;
       return "Native Start Error: ${e.message}";
     } catch (e) {
       _isRunning = false;
+      _cachedIsRunning = null;
+      _cachedIsRunningAt = null;
       return "Start Exception: $e";
     }
   }
@@ -508,20 +520,24 @@ class MihomoService {
     }
   }
 
-  Future<bool> checkIsRunning() async {
-    if (_isStatusCacheFresh(_cachedIsRunningAt) && _cachedIsRunning != null) {
+  Future<bool> checkIsRunning({bool forceRefresh = false}) async {
+    if (!forceRefresh &&
+        _isStatusCacheFresh(_cachedIsRunningAt) &&
+        _cachedIsRunning != null) {
       return _cachedIsRunning!;
     }
-    final pending = _pendingIsRunningRequest;
+    final pending = forceRefresh ? null : _pendingIsRunningRequest;
     if (pending != null) {
       return pending;
     }
     final future = _checkIsRunningNative();
-    _pendingIsRunningRequest = future;
+    if (!forceRefresh) {
+      _pendingIsRunningRequest = future;
+    }
     try {
       return await future;
     } finally {
-      if (identical(_pendingIsRunningRequest, future)) {
+      if (!forceRefresh && identical(_pendingIsRunningRequest, future)) {
         _pendingIsRunningRequest = null;
       }
     }
@@ -601,35 +617,70 @@ class MihomoService {
     }
   }
 
-  Future<String> getMode() async {
-    if (_isStatusCacheFresh(_cachedModeAt) && _cachedMode != null) {
+  Future<String> getMode({bool forceRefresh = false, Duration? timeout}) async {
+    if (!forceRefresh &&
+        _isStatusCacheFresh(_cachedModeAt) &&
+        _cachedMode != null) {
       return _cachedMode!;
     }
-    final pending = _pendingModeRequest;
+    final pending = forceRefresh ? null : _pendingModeRequest;
     if (pending != null) {
       return pending;
     }
-    final future = _getModeNative();
-    _pendingModeRequest = future;
+    final future = _getModeNative(timeout: timeout);
+    if (!forceRefresh) {
+      _pendingModeRequest = future;
+    }
     try {
       return await future;
     } finally {
-      if (identical(_pendingModeRequest, future)) {
+      if (!forceRefresh && identical(_pendingModeRequest, future)) {
         _pendingModeRequest = null;
       }
     }
   }
 
-  Future<String> _getModeNative() async {
+  Future<String?> probeMode({Duration? timeout}) async {
     try {
-      final String? mode = await _channel.invokeMethod('getMode');
-      final resolvedMode = mode ?? 'rule';
+      final request = _channel.invokeMethod<String>('getMode');
+      final mode = timeout == null
+          ? await request
+          : await request.timeout(timeout);
+      final resolvedMode = mode?.trim();
+      if (resolvedMode == null || resolvedMode.isEmpty) {
+        return null;
+      }
       _cacheMode(resolvedMode);
       return resolvedMode;
     } catch (e) {
       AppLogger.e("MihomoService: getMode error: $e");
-      return 'rule';
+      return null;
     }
+  }
+
+  Future<String> _getModeNative({Duration? timeout}) async {
+    final mode = await probeMode(timeout: timeout);
+    return mode ?? 'rule';
+  }
+
+  Future<bool> waitUntilReady({
+    Duration timeout = const Duration(seconds: 8),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final running = await checkIsRunning(forceRefresh: true);
+      if (running) {
+        final mode = await probeMode(timeout: _startupReadyProbeTimeout);
+        if (mode != null && mode.isNotEmpty) {
+          _cacheRunningState(true);
+          return true;
+        }
+      }
+      await Future.delayed(_startupReadyPollInterval);
+    }
+    _cachedIsRunning = null;
+    _cachedIsRunningAt = null;
+    return false;
   }
 
   Future<String?> getSelectedProxy(String groupName) async {
@@ -682,9 +733,10 @@ class MihomoService {
   Future<Map<String, dynamic>?> getSelectedProxyInfo(String groupName) async {
     try {
       if (Platform.isAndroid) {
-        final dynamic result = await _channel.invokeMethod('getSelectedProxyInfo', {
-          'groupName': groupName,
-        });
+        final dynamic result = await _channel.invokeMethod(
+          'getSelectedProxyInfo',
+          {'groupName': groupName},
+        );
         if (result is Map) {
           final info = result.map(
             (key, value) => MapEntry(key.toString(), value),
@@ -703,8 +755,9 @@ class MihomoService {
           return {
             'name': name,
             'type': (type == null || type.isEmpty) ? 'Unknown' : type,
-            'country':
-                (country == null || country.isEmpty) ? 'Unknown' : country,
+            'country': (country == null || country.isEmpty)
+                ? 'Unknown'
+                : country,
             'udp': udp,
           };
         }

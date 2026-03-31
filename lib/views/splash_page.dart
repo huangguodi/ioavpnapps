@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:app/core/logger.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -20,6 +21,7 @@ class SplashPage extends StatefulWidget {
 
 class _SplashPageState extends State<SplashPage> {
   static const int _maxStartupLoginAttempts = 3;
+  static const int _maxStartupHotUpdateAttempts = 3;
   static const List<Duration> _startupLoginRetryDelays = [
     Duration(milliseconds: 250),
     Duration(milliseconds: 500),
@@ -52,12 +54,15 @@ class _SplashPageState extends State<SplashPage> {
   }
 
   Future<void> _initApp() async {
+    AppLogger.d('Splash: init start');
     final canContinue = await _runHotUpdateBeforeLogin();
     if (!canContinue || !mounted) {
+      AppLogger.w('Splash: init interrupted before login');
       return;
     }
 
     final hasLocalToken = await ApiService().checkLocalToken();
+    AppLogger.d('Splash: local token=$hasLocalToken');
 
     if (hasLocalToken) {
       await ApiService().fetchUserInfo();
@@ -71,55 +76,86 @@ class _SplashPageState extends State<SplashPage> {
     final success = errorMsg == null;
 
     if (success) {
+      AppLogger.d('Splash: login success');
       final redeemed = await _ensureGiftCardRedeemed();
       if (!redeemed || !mounted) return;
       bool started = await _startMihomo();
       if (started) {
+        AppLogger.d('Splash: mihomo ready');
         final initialMode = await _resolveInitialMode();
         _scheduleDeferredStartupTasks();
         _navigateToHome(initialMode);
       } else {
+        AppLogger.e('Splash: mihomo start failed');
         await _exitApp();
       }
     } else {
+      AppLogger.e('Splash: login failed $errorMsg');
       await _exitApp();
     }
   }
 
   Future<bool> _runHotUpdateBeforeLogin() async {
-    try {
-      final result = await HotUpdateService().performStartupUpdate(
-        onProgress: (progress) {
-          if (!mounted) return;
-          setState(() {
-            if (progress.stage != HotUpdateStage.failed) {
-              _lastStableHotUpdateProgress = progress;
-            }
-            _hotUpdateProgress = progress;
-          });
-        },
-      );
-      if (!mounted) return false;
-      if (result.appliedUpdate ||
-          result.requiresRestart ||
-          !result.shouldContinue) {
+    String? lastError;
+    for (var attempt = 0; attempt < _maxStartupHotUpdateAttempts; attempt++) {
+      try {
+        AppLogger.d('Splash: hot update attempt=${attempt + 1}');
+        final result = await HotUpdateService().performStartupUpdate(
+          onProgress: (progress) {
+            if (!mounted) return;
+            setState(() {
+              if (progress.stage != HotUpdateStage.failed) {
+                _lastStableHotUpdateProgress = progress;
+              }
+              _hotUpdateProgress = progress;
+            });
+          },
+        );
+        if (!mounted) return false;
+        if (result.appliedUpdate ||
+            result.requiresRestart ||
+            !result.shouldContinue) {
+          AppLogger.w(
+            'Splash: hot update requires stop applied=${result.appliedUpdate} restart=${result.requiresRestart} continue=${result.shouldContinue}',
+          );
+          return false;
+        }
+        setState(() {
+          _hotUpdateProgress = null;
+        });
+        AppLogger.d('Splash: hot update finished');
+        return true;
+      } catch (e) {
+        lastError = e.toString();
+        AppLogger.e('Splash: hot update error $lastError');
+        if (attempt < _startupLoginRetryDelays.length &&
+            _shouldRetryStartupNetworkError(lastError)) {
+          await Future.delayed(_startupLoginRetryDelays[attempt]);
+          if (!mounted) {
+            return false;
+          }
+          continue;
+        }
+        if (!mounted) return false;
+        setState(() {
+          _hotUpdateProgress ??= HotUpdateProgress(
+            stage: HotUpdateStage.failed,
+            title: '热更新失败',
+            detail: lastError ?? e.toString(),
+          );
+        });
         return false;
       }
-      setState(() {
-        _hotUpdateProgress = null;
-      });
-      return true;
-    } catch (e) {
-      if (!mounted) return false;
-      setState(() {
-        _hotUpdateProgress ??= HotUpdateProgress(
-          stage: HotUpdateStage.failed,
-          title: '热更新失败',
-          detail: e.toString(),
-        );
-      });
-      return false;
     }
+    if (!mounted) return false;
+    setState(() {
+      _hotUpdateProgress ??= HotUpdateProgress(
+        stage: HotUpdateStage.failed,
+        title: '热更新失败',
+        detail: lastError ?? '未知错误',
+      );
+    });
+    return false;
   }
 
   Future<String?> _loginWithStartupRetry() async {
@@ -130,7 +166,7 @@ class _SplashPageState extends State<SplashPage> {
       } catch (e) {
         lastError = "Exception: $e";
       }
-      if (lastError == null || !_shouldRetryStartupLogin(lastError)) {
+      if (lastError == null || !_shouldRetryStartupNetworkError(lastError)) {
         return lastError;
       }
       if (attempt >= _startupLoginRetryDelays.length) {
@@ -145,7 +181,7 @@ class _SplashPageState extends State<SplashPage> {
     return lastError;
   }
 
-  bool _shouldRetryStartupLogin(String? errorMsg) {
+  bool _shouldRetryStartupNetworkError(String? errorMsg) {
     if (errorMsg == null) {
       return false;
     }
@@ -481,11 +517,13 @@ class _SplashPageState extends State<SplashPage> {
 
   Future<bool> _startMihomo() async {
     try {
+      AppLogger.d('Splash: mihomo init start');
       // Initialize service (copy assets, MMDB, etc.)
       await MihomoService().init();
 
       // Stop any existing instance to ensure a fresh cold start with correct ports
-      if (await MihomoService().checkIsRunning()) {
+      if (await MihomoService().checkIsRunning(forceRefresh: true)) {
+        AppLogger.w('Splash: existing mihomo detected, stopping first');
         await MihomoService().stop();
         await Future.delayed(const Duration(seconds: 1));
       }
@@ -498,24 +536,40 @@ class _SplashPageState extends State<SplashPage> {
             subscribeUrl: subscribeUrl.toString(),
           );
           if (startError != null) {
+            AppLogger.e('Splash: mihomo start error $startError');
             return false;
           }
+          if (Platform.isIOS) {
+            final ready = await MihomoService().waitUntilReady(
+              timeout: const Duration(seconds: 10),
+            );
+            AppLogger.d('Splash: iOS mihomo ready=$ready');
+            return ready;
+          }
           for (int i = 0; i < 10; i++) {
-            final running = await MihomoService().checkIsRunning();
+            final running = await MihomoService().checkIsRunning(
+              forceRefresh: true,
+            );
             if (running) {
+              AppLogger.d('Splash: mihomo running after ${i + 1} probes');
               return true;
             }
             await Future.delayed(const Duration(milliseconds: 500));
           }
+          AppLogger.e('Splash: mihomo running probe timeout');
           return false;
         } else {
+          AppLogger.e('Splash: subscribe url missing');
           return false;
         }
       }
+      AppLogger.e('Splash: user info missing for mihomo start');
       return false;
     } on PlatformException {
+      AppLogger.e('Splash: mihomo start platform exception');
       return false;
     } catch (_) {
+      AppLogger.e('Splash: mihomo start unknown exception');
       return false;
     }
   }
@@ -534,13 +588,20 @@ class _SplashPageState extends State<SplashPage> {
 
   Future<ConnectionMode> _resolveInitialMode() async {
     try {
-      final isRunning = await MihomoService().checkIsRunning();
+      final isRunning = await MihomoService().checkIsRunning(
+        forceRefresh: true,
+      );
       if (!isRunning) return ConnectionMode.off;
-      final mode = await MihomoService().getMode();
+      final mode = await MihomoService().getMode(
+        forceRefresh: true,
+        timeout: const Duration(seconds: 2),
+      );
+      AppLogger.d('Splash: resolved mode=$mode');
       if (mode == 'global') return ConnectionMode.global;
       if (mode == 'direct') return ConnectionMode.off;
       return ConnectionMode.smart;
     } catch (_) {
+      AppLogger.e('Splash: resolve initial mode failed');
       return ConnectionMode.off;
     }
   }
