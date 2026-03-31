@@ -166,7 +166,6 @@ class MihomoService {
 
   Future<void> init() async {
     _listenToNativeLogs();
-    await _ensureMMDB();
   }
 
   /// Listen to native logs
@@ -224,31 +223,6 @@ class MihomoService {
       }
     }
     return await getApplicationSupportDirectory();
-  }
-
-  Future<void> _ensureMMDB() async {
-    try {
-      final directory = await _getWorkingDir();
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
-      final mmdbFile = File('${directory.path}/Country.mmdb');
-      if (!await mmdbFile.exists()) {
-        // Copy from assets if needed, or download
-        // Assuming asset 'assets/Country.mmdb' exists as per usual Clash setup
-        try {
-          final byteData = await HotUpdateService().loadRuntimeAsset(
-            'assets/Country.mmdb',
-          );
-          await mmdbFile.writeAsBytes(byteData.buffer.asUint8List());
-          AppLogger.d("MihomoService: Country.mmdb copied to ${mmdbFile.path}");
-        } catch (e) {
-          AppLogger.e("MihomoService: Failed to copy Country.mmdb: $e");
-        }
-      }
-    } catch (e) {
-      AppLogger.e("MihomoService: _ensureMMDB error: $e");
-    }
   }
 
   Future<String> _saveConfig(String content) async {

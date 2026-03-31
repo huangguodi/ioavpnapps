@@ -27,21 +27,11 @@ final class PacketFlowBridgeAdapter: NSObject {
   private let packetFlow: NEPacketTunnelFlow
   private let onError: (String) -> Void
   private let lockQueue = DispatchQueue(label: "com.accelerator.tg.packetflow.bridge")
-  private var inboundQueue: [AnyObject] = []
 
   init(packetFlow: NEPacketTunnelFlow, onError: @escaping (String) -> Void) {
     self.packetFlow = packetFlow
     self.onError = onError
     super.init()
-  }
-
-  func enqueueInbound(_ packet: AnyObject) {
-    lockQueue.sync {
-      inboundQueue.append(packet)
-      if inboundQueue.count > 2048 {
-        inboundQueue.removeFirst(inboundQueue.count - 2048)
-      }
-    }
   }
 
   @objc(onPacketFlowError:)
@@ -51,12 +41,7 @@ final class PacketFlowBridgeAdapter: NSObject {
 
   @objc(readPacket)
   func readPacket() -> AnyObject? {
-    lockQueue.sync {
-      if inboundQueue.isEmpty {
-        return nil
-      }
-      return inboundQueue.removeFirst()
-    }
+    return nil
   }
 
   @objc(writePacket:)
@@ -140,8 +125,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       }
       self.bridge = bridge
       MobileSetPacketFlowBridge(bridge)
-      MobileStart(groupURL.path as NSString, "config.yaml")
       self.startReadPacketsLoop()
+      MobileStart(groupURL.path as NSString, "config.yaml")
       self.startPathMonitor()
       completionHandler(nil)
     }
@@ -308,7 +293,6 @@ tun:
             continue
           }
           if let mobilePacket = MobileNewPacketFlowPacket(packetData as NSData, af) {
-            bridge.enqueueInbound(mobilePacket)
             _ = MobileFeedPacketFromFlow(mobilePacket)
           }
         }
