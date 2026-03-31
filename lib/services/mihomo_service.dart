@@ -211,9 +211,23 @@ class MihomoService {
     return false;
   }
 
+  Future<Directory> _getWorkingDir() async {
+    if (Platform.isIOS) {
+      try {
+        final path = await _channel.invokeMethod<String>('getAppGroupDirectory');
+        if (path != null && path.isNotEmpty) {
+          return Directory(path);
+        }
+      } catch (e) {
+        AppLogger.e("MihomoService: Failed to get App Group Directory: $e");
+      }
+    }
+    return await getApplicationSupportDirectory();
+  }
+
   Future<void> _ensureMMDB() async {
     try {
-      final directory = await getApplicationSupportDirectory();
+      final directory = await _getWorkingDir();
       if (!await directory.exists()) {
         await directory.create(recursive: true);
       }
@@ -237,7 +251,7 @@ class MihomoService {
   }
 
   Future<String> _saveConfig(String content) async {
-    final directory = await getApplicationSupportDirectory();
+    final directory = await _getWorkingDir();
     if (!await directory.exists()) {
       await directory.create(recursive: true);
     }
@@ -254,7 +268,7 @@ class MihomoService {
 
   Future<void> _updateConfigFileMode(String mode) async {
     try {
-      final directory = await getApplicationSupportDirectory();
+      final directory = await _getWorkingDir();
       final configFile = File('${directory.path}/config.yaml');
       if (await configFile.exists()) {
         final originalContent = await configFile.readAsString();
@@ -298,7 +312,7 @@ class MihomoService {
 
   Future<String?> readStoredMode() async {
     try {
-      final directory = await getApplicationSupportDirectory();
+      final directory = await _getWorkingDir();
       final configFile = File('${directory.path}/config.yaml');
       if (!await configFile.exists()) {
         return null;
@@ -1203,7 +1217,7 @@ class MihomoService {
             AppLogger.i("MihomoService: Attempting auto-restart...");
             if (_lastSubscribeUrl != null) {
               try {
-                final directory = await getApplicationSupportDirectory();
+                final directory = await _getWorkingDir();
                 final file = File('${directory.path}/config.yaml');
                 if (await file.exists()) {
                   final configContent = await file.readAsString();

@@ -185,6 +185,12 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
               result(true)
             }
           }
+      } else if call.method == "getAppGroupDirectory" {
+          if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: self.appGroupIdentifier) {
+            result(groupURL.path)
+          } else {
+            result(FlutterError(code: "UNAVAILABLE", message: "Cannot get App Group directory", details: nil))
+          }
       } else if call.method == "getAesKey" {
           result(self.nativeAesKey())
       } else if call.method == "getObfuscateKey" {
