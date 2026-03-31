@@ -9,7 +9,7 @@
 /* Begin PBXBuildFile section */
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		A90000010000000000000001 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000020000000000000001 /* PacketTunnelProvider.swift */; };
-		A90000010000000000000002 /* PacketTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A90000020000000000000004 /* PacketTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A90000010000000000000002 /* PacketTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A90000020000000000000004 /* PacketTunnel.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		A90000010000000000000003 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A90000020000000000000005 /* NetworkExtension.framework */; };
 		A90000010000000000000004 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A90000020000000000000005 /* NetworkExtension.framework */; };
 		A90000010000000000000005 /* libmihomo.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6012345678902 /* libmihomo.a */; };
@@ -30,6 +30,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 97C146ED1CF9000F007C117D;
 			remoteInfo = Runner;
+		};
+		A90000080000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 97C146E61CF9000F007C117D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A90000050000000000000001;
+			remoteInfo = PacketTunnel;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -225,6 +232,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				A90000080000000000000002 /* PBXTargetDependency */,
 			);
 			name = Runner;
 			productName = Runner;
@@ -367,6 +375,11 @@
 			isa = PBXTargetDependency;
 			target = 97C146ED1CF9000F007C117D /* Runner */;
 			targetProxy = 331C8085294A63A400263BE5 /* PBXContainerItemProxy */;
+		};
+		A90000080000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A90000050000000000000001 /* PacketTunnel */;
+			targetProxy = A90000080000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
