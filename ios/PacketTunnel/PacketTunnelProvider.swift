@@ -3,7 +3,7 @@ import NetworkExtension
 import Network
 
 @_silgen_name("MobileMihomoWarmup") private func MihomoWarmup()
-@_silgen_name("MobileMobileStartWithMemory") private func MobileStartWithMemory(_ cfgStr: NSString?)
+@_silgen_name("MobileMobileStartWithMemory") private func MobileStartWithMemory(_ cfgStr: NSString?, _ error: UnsafeMutablePointer<NSError?>?) -> Bool
 @_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
 @_silgen_name("MobileStop") private func MobileStop()
 @_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
@@ -170,7 +170,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       
       self.mihomoQueue.async {
         let tunConfig = self.injectTunConfig(configContent)
-        MobileStartWithMemory(tunConfig as NSString)
+        
+        let safeConfig = NSString(string: tunConfig)
+        var error: NSError?
+        
+        let success = MobileStartWithMemory(safeConfig, &error)
+        
+        if !success || error != nil {
+           let errMsg = error?.localizedDescription ?? "unknown error"
+           self.cancelTunnelWithError(NSError(domain: "Tunnel", code: -5, userInfo: [NSLocalizedDescriptionKey: "MobileStartWithMemory failed: \(errMsg)"]))
+        }
       }
       
       self.startPathMonitor()
