@@ -2,7 +2,7 @@ import Foundation
 import NetworkExtension
 import Network
 
-final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
+final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridgeProtocol {
   private let packetFlow: NEPacketTunnelFlow
   private let onError: (String) -> Void
   private let lockQueue = DispatchQueue(label: "com.accelerator.tg.packetflow.bridge")
@@ -38,7 +38,7 @@ final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
   }
 }
 
-final class SocketProtectorAdapter: NSObject, MobileSocketProtector {
+final class SocketProtectorAdapter: NSObject, MobileSocketProtectorProtocol {
   // Currently unused since NEPacketTunnelProvider doesn't provide a mark socket API for file descriptors directly
   // But we provide the implementation for the libmihomo hook.
   
