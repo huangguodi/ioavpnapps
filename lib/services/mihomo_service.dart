@@ -26,6 +26,7 @@ class MihomoService {
     milliseconds: 900,
   );
   static const Duration _iosPostStartStatusCooldown = Duration(seconds: 2);
+  static const Duration _iosProxyStartupCooldown = Duration(seconds: 8);
   static const Duration _iosDaemonCheckInitialDelay = Duration(seconds: 20);
   static const Duration _iosRunningGraceWindow = Duration(seconds: 45);
   static const Duration _startupReadyProbeTimeout = Duration(milliseconds: 900);
@@ -443,17 +444,14 @@ class MihomoService {
         _deferNonCriticalStatusQueries(_iosPostStartStatusCooldown);
       }
 
-      Future.delayed(
-        Platform.isIOS
-            ? const Duration(milliseconds: 2200)
-            : const Duration(milliseconds: 500),
-        () {
+      if (!Platform.isIOS) {
+        Future.delayed(const Duration(milliseconds: 500), () {
           if (!_isRunning) {
             return;
           }
           unawaited(getProxies(forceRefresh: true));
-        },
-      );
+        });
+      }
 
       return null;
     } on PlatformException catch (e) {
@@ -889,7 +887,7 @@ class MihomoService {
     if (pending != null) {
       return pending;
     }
-    final future = _getProxiesNative();
+    final future = _getProxiesWithStartupGuard();
     _pendingProxiesRequest = future;
     try {
       return await future;
@@ -897,6 +895,25 @@ class MihomoService {
       if (identical(_pendingProxiesRequest, future)) {
         _pendingProxiesRequest = null;
       }
+    }
+  }
+
+  Future<Map<String, dynamic>> _getProxiesWithStartupGuard() async {
+    await _waitForSafeIosProxyQueryWindow();
+    return _getProxiesNative();
+  }
+
+  Future<void> _waitForSafeIosProxyQueryWindow() async {
+    if (!Platform.isIOS) {
+      return;
+    }
+    final startedAt = _lastNativeStartAt;
+    if (startedAt == null) {
+      return;
+    }
+    final remaining = _iosProxyStartupCooldown - DateTime.now().difference(startedAt);
+    if (remaining > Duration.zero) {
+      await Future.delayed(remaining);
     }
   }
 
