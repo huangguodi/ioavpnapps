@@ -3,7 +3,7 @@ import NetworkExtension
 import Network
 
 @_silgen_name("MobileMihomoWarmup") private func MihomoWarmup()
-@_silgen_name("MobileMobileStartWithMemory") private func MobileStartWithMemory(_ cfgStr: NSString?, _ error: UnsafeMutablePointer<NSError?>?) -> Bool
+@_silgen_name("MobileMobileStartWithMemory") private func MobileStartWithMemory(_ cfgStr: NSString?, _ error: AutoreleasingUnsafeMutablePointer<NSError?>?) -> Bool
 @_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
 @_silgen_name("MobileStop") private func MobileStop()
 @_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
@@ -25,6 +25,7 @@ import Network
 @_silgen_name("MobileClearSocketProtector") private func MobileClearSocketProtector()
 @_silgen_name("MobileSleep") private func MobileSleep()
 @_silgen_name("MobileWake") private func MobileWake() -> Bool
+@_silgen_name("MobileRestartTunnelForNetworkChange") private func MobileRestartTunnelForNetworkChange() -> Bool
 
 final class PacketFlowBridgeAdapter: NSObject {
   private let packetFlow: NEPacketTunnelFlow
@@ -100,15 +101,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   }
 
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
-    completionHandler(nil)
-    
     mihomoQueue.async { [weak self] in
       guard let self = self else { return }
-      self.performStartTunnel()
+      self.performStartTunnel(completionHandler: completionHandler)
     }
   }
 
-  private func performStartTunnel() {
+  private func performStartTunnel(completionHandler: @escaping (Error?) -> Void) {
     let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
     let appGroup = providerConfig["appGroup"] as? String ?? defaultAppGroup
     
@@ -124,10 +123,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     if configContent.isEmpty {
+      finishStart(
+        completionHandler,
+        error: NSError(
+          domain: "Tunnel",
+          code: -1,
+          userInfo: [NSLocalizedDescriptionKey: "vpn_config_content is empty"]
+        )
+      )
       return
     }
 
     guard let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) else {
+      finishStart(
+        completionHandler,
+        error: NSError(
+          domain: "Tunnel",
+          code: -2,
+          userInfo: [NSLocalizedDescriptionKey: "failed to resolve App Group directory: \(appGroup)"]
+        )
+      )
       return
     }
 
@@ -150,7 +165,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     setTunnelNetworkSettings(settings) { [weak self] error in
       guard let self else { return }
-      if error != nil {
+      if let error {
+        self.finishStart(completionHandler, error: error)
         return
       }
 
@@ -170,19 +186,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       
       self.mihomoQueue.async {
         let tunConfig = self.injectTunConfig(configContent)
-        
         let safeConfig = NSString(string: tunConfig)
-        var error: NSError?
-        
-        let success = MobileStartWithMemory(safeConfig, &error)
-        
-        if !success || error != nil {
-           let errMsg = error?.localizedDescription ?? "unknown error"
-           self.cancelTunnelWithError(NSError(domain: "Tunnel", code: -5, userInfo: [NSLocalizedDescriptionKey: "MobileStartWithMemory failed: \(errMsg)"]))
+        var startError: NSError?
+        let started = withExtendedLifetime(safeConfig) {
+          MobileStartWithMemory(safeConfig, &startError)
         }
+        guard started else {
+          self.bridge = nil
+          MobileClearPacketFlowBridge()
+          self.socketProtector = nil
+          MobileClearSocketProtector()
+          MobileStop()
+          self.finishStart(
+            completionHandler,
+            error: startError ?? NSError(
+              domain: "Tunnel",
+              code: -3,
+              userInfo: [NSLocalizedDescriptionKey: "MobileStartWithMemory returned false"]
+            )
+          )
+          return
+        }
+        self.startPathMonitor()
+        self.finishStart(completionHandler, error: nil)
       }
-      
-      self.startPathMonitor()
     }
   }
 
@@ -256,7 +283,7 @@ tun:
 
   override func wake() {
     if !MobileWake() {
-      MobileResetNetwork()
+      _ = MobileRestartTunnelForNetworkChange()
     }
   }
 
@@ -399,9 +426,15 @@ tun:
         return
       }
       self.lastPathRestartAt = now
-      MobileResetNetwork()
+      _ = MobileRestartTunnelForNetworkChange()
     }
     monitor.start(queue: DispatchQueue(label: "com.accelerator.tg.packettunnel.path"))
     pathMonitor = monitor
+  }
+
+  private func finishStart(_ completionHandler: @escaping (Error?) -> Void, error: Error?) {
+    DispatchQueue.main.async {
+      completionHandler(error)
+    }
   }
 }

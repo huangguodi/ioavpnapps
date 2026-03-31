@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:app/core/constants.dart';
 import 'package:app/core/logger.dart';
 import 'package:app/services/api_service.dart'; // Import ApiService
+import 'package:app/views/widgets/custom_dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -43,6 +44,7 @@ class MihomoService {
   Timer? _daemonTimer;
   int _restartCount = 0;
   int _daemonConsecutiveFailures = 0;
+  bool _isShowingStartErrorDialog = false;
   String? _lastSelectedGlobalProxy;
   bool? _cachedIsRunning;
   DateTime? _cachedIsRunningAt;
@@ -343,17 +345,29 @@ class MihomoService {
       if (Platform.isIOS) {
         final granted = await requestVpnPermission();
         if (!granted) {
-          return "VPN permission denied";
+          const error = "VPN permission denied";
+          await _showStartErrorDialog(error);
+          return error;
         }
-        return await _startNative('', configContent);
+        final error = await _startNative('', configContent);
+        if (error != null) {
+          await _showStartErrorDialog(error);
+        }
+        return error;
       }
 
       final configPath = await _saveConfig(configContent);
 
-      return await _startNative(configPath, configContent);
+      final error = await _startNative(configPath, configContent);
+      if (error != null) {
+        await _showStartErrorDialog(error);
+      }
+      return error;
     } catch (e) {
       AppLogger.e("MihomoService: Start error: $e");
-      return e.toString();
+      final error = e.toString();
+      await _showStartErrorDialog(error);
+      return error;
     }
   }
 
@@ -452,6 +466,21 @@ class MihomoService {
       _cachedIsRunning = null;
       _cachedIsRunningAt = null;
       return "Start Exception: $e";
+    }
+  }
+
+  Future<void> _showStartErrorDialog(String message) async {
+    if (_isShowingStartErrorDialog) {
+      return;
+    }
+    _isShowingStartErrorDialog = true;
+    try {
+      await showGlobalMessageDialog(
+        title: '启动失败',
+        message: message,
+      );
+    } finally {
+      _isShowingStartErrorDialog = false;
     }
   }
 

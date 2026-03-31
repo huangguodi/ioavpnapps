@@ -67,7 +67,7 @@ FOUNDATION_EXPORT void MobileMihomoWarmup(void);
 /**
  * MobileStartWithMemory starts the core with a configuration string directly from memory
  */
-FOUNDATION_EXPORT void MobileMobileStartWithMemory(NSString* _Nullable cfgStr);
+FOUNDATION_EXPORT BOOL MobileMobileStartWithMemory(NSString* _Nullable cfgStr, NSError* _Nullable* _Nullable error);
 
 FOUNDATION_EXPORT MobilePacketFlowPacket* _Nullable MobileNewPacketFlowPacket(NSData* _Nullable data, int64_t af);
 
