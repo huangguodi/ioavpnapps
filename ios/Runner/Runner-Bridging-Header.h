@@ -1,2 +1,2 @@
 #import "GeneratedPluginRegistrant.h"
-#import "ThirdParty/mihomo/libmihomo.h"
+#import "ThirdParty/mihomo/libmihomo_bridge.h"
