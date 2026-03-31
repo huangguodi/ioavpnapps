@@ -412,6 +412,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
 				);
+				OTHER_LDFLAGS = "-lmihomo";
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiangyu.clash.packettunnel;
 				PRODUCT_NAME = PacketTunnel;
 				PROVISIONING_PROFILE_SPECIFIER = Clash_Extension_Profile;
@@ -446,6 +447,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
 				);
+				OTHER_LDFLAGS = "-lmihomo";
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiangyu.clash.packettunnel;
 				PRODUCT_NAME = PacketTunnel;
 				PROVISIONING_PROFILE_SPECIFIER = Clash_Extension_Profile;
@@ -479,6 +481,7 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Runner/ThirdParty/mihomo",
 				);
+				OTHER_LDFLAGS = "-lmihomo";
 				PRODUCT_BUNDLE_IDENTIFIER = com.xiangyu.clash.packettunnel;
 				PRODUCT_NAME = PacketTunnel;
 				PROVISIONING_PROFILE_SPECIFIER = Clash_Extension_Profile;

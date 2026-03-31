@@ -169,10 +169,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       self.startReadPacketsLoop()
       
       self.mihomoQueue.async {
-        do {
-          let tunConfig = self.injectTunConfig(configContent)
-          MobileStartWithMemory(tunConfig as NSString)
-        }
+        let tunConfig = self.injectTunConfig(configContent)
+        MobileStartWithMemory(tunConfig as NSString)
       }
       
       self.startPathMonitor()
