@@ -58,10 +58,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let tunnelRemoteAddress = "127.0.0.1"
   private let ipv4Address = "172.19.0.1"
   private let ipv4SubnetMask = "255.255.255.252"
+  private let enableIPv6Route = false
   private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
   private let tunnelMTU = 1400
-  private let dnsServers = ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888"]
+  private let dnsServers = ["1.1.1.1", "8.8.8.8"]
   private let pathRestartThrottle: TimeInterval = 2.0
   private var bridge: PacketFlowBridgeAdapter?
   private var socketProtector: SocketProtectorAdapter?
@@ -135,12 +136,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     let ipv4Settings = NEIPv4Settings(addresses: [ipv4Address], subnetMasks: [ipv4SubnetMask])
     ipv4Settings.includedRoutes = [NEIPv4Route.default()]
     settings.ipv4Settings = ipv4Settings
-    let ipv6Settings = NEIPv6Settings(
-      addresses: [ipv6Address],
-      networkPrefixLengths: [NSNumber(value: ipv6PrefixLength)]
-    )
-    ipv6Settings.includedRoutes = [NEIPv6Route.default()]
-    settings.ipv6Settings = ipv6Settings
+    if enableIPv6Route {
+      let ipv6Settings = NEIPv6Settings(
+        addresses: [ipv6Address],
+        networkPrefixLengths: [NSNumber(value: ipv6PrefixLength)]
+      )
+      ipv6Settings.includedRoutes = [NEIPv6Route.default()]
+      settings.ipv6Settings = ipv6Settings
+    }
     settings.mtu = NSNumber(value: tunnelMTU)
     let dns = NEDNSSettings(servers: dnsServers)
     dns.matchDomains = [""]
@@ -244,7 +247,6 @@ tun:
   mtu: \(tunnelMTU)
   dns-hijack:
     - 0.0.0.0:53
-    - "[::]:53"
 """
     let lines = configContent.components(separatedBy: .newlines)
     var output: [String] = []
