@@ -292,8 +292,10 @@ tun:
           if af != Int64(AF_INET) && af != Int64(AF_INET6) {
             continue
           }
-          if let mobilePacket = MobileNewPacketFlowPacket(packetData as NSData, af) {
-            _ = MobileFeedPacketFromFlow(mobilePacket)
+          autoreleasepool {
+            if let mobilePacket = MobileNewPacketFlowPacket(packetData as NSData, af) {
+              _ = MobileFeedPacketFromFlow(mobilePacket)
+            }
           }
         }
       }
