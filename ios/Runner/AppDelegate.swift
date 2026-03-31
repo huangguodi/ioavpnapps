@@ -496,7 +496,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
 
       let proto = NETunnelProviderProtocol()
       proto.providerBundleIdentifier = self.tunnelBundleIdentifier
-      proto.serverAddress = "127.0.0.1"
+      proto.serverAddress = "Accelerator"
       proto.disconnectOnSleep = false
       proto.providerConfiguration = [
         "appGroup": self.appGroupIdentifier
@@ -799,7 +799,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       }
       let proto = NETunnelProviderProtocol()
       proto.providerBundleIdentifier = self.tunnelBundleIdentifier
-      proto.serverAddress = "127.0.0.1"
+      proto.serverAddress = "Accelerator"
       proto.disconnectOnSleep = false
       proto.providerConfiguration = [
         "appGroup": self.appGroupIdentifier
