@@ -9,11 +9,13 @@ import 'package:app/views/widgets/custom_dialog.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class MihomoService {
   static const MethodChannel _channel = MethodChannel(
     'com.accelerator.tg/mihomo',
   );
+  static const String _iosPersistedModeKey = 'ios_persisted_vpn_mode';
   static const bool _verboseNativeLogs = bool.fromEnvironment(
     'MIHOMO_VERBOSE_NATIVE_LOGS',
     defaultValue: false,
@@ -272,6 +274,10 @@ class MihomoService {
 
   Future<bool> persistMode(String mode) async {
     try {
+      if (Platform.isIOS) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_iosPersistedModeKey, mode);
+      }
       await _updateConfigFileMode(mode);
       final storedMode = await readStoredMode();
       if (storedMode == mode) {
@@ -290,6 +296,14 @@ class MihomoService {
 
   Future<String?> readStoredMode() async {
     try {
+      if (Platform.isIOS) {
+        final prefs = await SharedPreferences.getInstance();
+        final persisted = prefs.getString(_iosPersistedModeKey)?.trim();
+        if (persisted != null && persisted.isNotEmpty) {
+          _cacheMode(persisted);
+          return persisted;
+        }
+      }
       final directory = await _getWorkingDir();
       final configFile = File('${directory.path}/config.yaml');
       if (!await configFile.exists()) {
