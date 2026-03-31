@@ -210,9 +210,9 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             result(nil)
           }
       } else if call.method == "isRunning" || call.method == "isMihomoRunning" {
-          self.loadTunnelManager { manager, _ in
+          self.loadTunnelManager(forceRefresh: true) { manager, _ in
             let status = manager?.connection.status ?? .invalid
-            result(status == .connected || status == .reasserting)
+            result(status == .connected || status == .reasserting || status == .connecting)
           }
       } else if call.method == "changeMode" || call.method == "setModeNative" {
           let args = call.arguments as? [String: Any]
@@ -510,22 +510,26 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   }
 
   private func waitTunnelConnected(manager: NETunnelProviderManager, retries: Int, completion: @escaping (Error?) -> Void) {
-    let status = manager.connection.status
-    if status == .connected || status == .reasserting {
-      markPostStartStatusDelay()
-      completion(nil)
-      return
-    }
-    if status == .disconnected || status == .invalid {
-      completion(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: "tunnel status: \(status.rawValue)"]))
-      return
-    }
-    if retries <= 0 {
-      completion(NSError(domain: "Tunnel", code: -5, userInfo: [NSLocalizedDescriptionKey: "tunnel status timeout: \(status.rawValue)"]))
-      return
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-      self?.waitTunnelConnected(manager: manager, retries: retries - 1, completion: completion)
+    loadTunnelManager(forceRefresh: true) { refreshedManager, _ in
+      let activeManager = refreshedManager ?? manager
+      let status = activeManager.connection.status
+      self.cachedTunnelManager = activeManager
+      if status == .connected || status == .reasserting {
+        self.markPostStartStatusDelay()
+        completion(nil)
+        return
+      }
+      if status == .invalid {
+        completion(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: "tunnel status: \(status.rawValue)"]))
+        return
+      }
+      if retries <= 0 {
+        completion(NSError(domain: "Tunnel", code: -5, userInfo: [NSLocalizedDescriptionKey: "tunnel status timeout: \(status.rawValue)"]))
+        return
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+        self?.waitTunnelConnected(manager: activeManager, retries: retries - 1, completion: completion)
+      }
     }
   }
 
@@ -534,17 +538,21 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     retries: Int,
     completion: @escaping (Bool) -> Void
   ) {
-    let status = manager.connection.status
-    if status == .disconnected || status == .invalid {
-      completion(true)
-      return
-    }
-    if retries <= 0 {
-      completion(false)
-      return
-    }
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
-      self?.waitTunnelStopped(manager: manager, retries: retries - 1, completion: completion)
+    loadTunnelManager(forceRefresh: true) { refreshedManager, _ in
+      let activeManager = refreshedManager ?? manager
+      let status = activeManager.connection.status
+      self.cachedTunnelManager = activeManager
+      if status == .disconnected || status == .invalid {
+        completion(true)
+        return
+      }
+      if retries <= 0 {
+        completion(false)
+        return
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+        self?.waitTunnelStopped(manager: activeManager, retries: retries - 1, completion: completion)
+      }
     }
   }
 
