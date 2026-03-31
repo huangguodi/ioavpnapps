@@ -94,6 +94,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private var hasObservedInitialPathUpdate = false
   private var lastPathRestartAt = Date.distantPast
   private let mihomoQueue = DispatchQueue(label: "com.accelerator.tg.mihomo.core", qos: .userInitiated)
+  private let stateQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.state")
+  private var lifecycleID: UInt64 = 0
+  private var tunnelActive = false
+  private var coreRunning = false
 
   override init() {
     super.init()
@@ -149,6 +153,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     homeURL = groupURL
+    let lifecycleID = beginTunnelLifecycle()
 
     let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: ipv4Address)
     let ipv4Settings = NEIPv4Settings(addresses: [ipv4Address], subnetMasks: [ipv4SubnetMask])
@@ -168,26 +173,37 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     setTunnelNetworkSettings(settings) { [weak self] error in
       guard let self else { return }
       if let error {
+        self.endTunnelLifecycle()
         self.finishStart(completionHandler, error: error)
         return
       }
-
-      _ = MobileSetAppGroupDirectory(groupURL.path as NSString)
 
       let bridge = PacketFlowBridgeAdapter(packetFlow: self.packetFlow) { message in
         self.cancelTunnelWithError(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: message]))
       }
       self.bridge = bridge
-      MobileSetPacketFlowBridge(bridge)
       
       let protector = SocketProtectorAdapter()
       self.socketProtector = protector
-      MobileSetSocketProtector(protector)
-      
-      self.startReadPacketsLoop()
       
       self.mihomoQueue.async {
         self.runWithMihomoAutoreleasePool {
+          guard self.isTunnelActive(lifecycleID: lifecycleID) else {
+            self.finishStart(
+              completionHandler,
+              error: NSError(
+                domain: "Tunnel",
+                code: -5,
+                userInfo: [NSLocalizedDescriptionKey: "tunnel lifecycle changed before start completed"]
+              )
+            )
+            return
+          }
+
+          _ = MobileSetAppGroupDirectory(groupURL.path as NSString)
+          MobileSetPacketFlowBridge(bridge)
+          MobileSetSocketProtector(protector)
+
           let tunConfig = self.injectTunConfig(configContent)
           let safeConfig = NSString(string: tunConfig)
           var startError: NSError?
@@ -195,11 +211,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             MobileStartWithMemory(safeConfig, &startError)
           }
           guard started else {
-            self.bridge = nil
-            MobileClearPacketFlowBridge()
-            self.socketProtector = nil
-            MobileClearSocketProtector()
             MobileStop()
+            MobileClearPacketFlowBridge()
+            MobileClearSocketProtector()
+            self.endTunnelLifecycle()
+            self.bridge = nil
+            self.socketProtector = nil
             self.finishStart(
               completionHandler,
               error: startError ?? NSError(
@@ -210,7 +227,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
             return
           }
-          self.startPathMonitor()
+
+          self.markCoreRunning(lifecycleID: lifecycleID)
+          self.startPathMonitor(lifecycleID: lifecycleID)
+          DispatchQueue.main.async {
+            self.startReadPacketsLoop(lifecycleID: lifecycleID)
+          }
           self.finishStart(completionHandler, error: nil)
         }
       }
@@ -267,15 +289,16 @@ tun:
     pathMonitor = nil
     hasObservedInitialPathUpdate = false
     lastPathRestartAt = Date.distantPast
-    MobileClearPacketFlowBridge()
-    bridge = nil
-    MobileClearSocketProtector()
-    socketProtector = nil
+    endTunnelLifecycle()
     
     mihomoQueue.async {
       self.runWithMihomoAutoreleasePool {
         MobileStop()
+        MobileClearPacketFlowBridge()
+        MobileClearSocketProtector()
         DispatchQueue.main.async {
+          self.bridge = nil
+          self.socketProtector = nil
           completionHandler()
         }
       }
@@ -283,19 +306,33 @@ tun:
   }
 
   override func sleep(completionHandler: @escaping () -> Void) {
-    MobileSleep()
+    mihomoQueue.async {
+      guard self.isCoreRunning() else { return }
+      self.runWithMihomoAutoreleasePool {
+        MobileSleep()
+      }
+    }
     completionHandler()
   }
 
   override func wake() {
-    if !MobileWake() {
-      _ = MobileRestartTunnelForNetworkChange()
+    mihomoQueue.async {
+      guard self.isCoreRunning() else { return }
+      self.runWithMihomoAutoreleasePool {
+        if !MobileWake() {
+          _ = MobileRestartTunnelForNetworkChange()
+        }
+      }
     }
   }
 
   override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
     mihomoQueue.async { [weak self] in
       guard let self else { return }
+      guard self.isCoreRunning() else {
+        completionHandler?(nil)
+        return
+      }
 
       self.runWithMihomoAutoreleasePool {
         if let message = String(data: messageData, encoding: .utf8),
@@ -430,11 +467,14 @@ tun:
     return group["now"] as? String
   }
 
-  private func startReadPacketsLoop() {
+  private func startReadPacketsLoop(lifecycleID: UInt64) {
     packetFlow.readPackets { [weak self] packets, protocols in
       guard let self else { return }
+      guard self.isTunnelActive(lifecycleID: lifecycleID) else { return }
       let count = min(packets.count, protocols.count)
-      if count > 0, let bridge = self.bridge {
+      if count > 0 {
+        var packetBatch: [(NSData, Int64)] = []
+        packetBatch.reserveCapacity(count)
         for i in 0..<count {
           let packetData = packets[i]
           let af = Int64(protocols[i].int32Value)
@@ -444,21 +484,34 @@ tun:
           if af != Int64(AF_INET) && af != Int64(AF_INET6) {
             continue
           }
-          autoreleasepool {
-            _ = MobileFeedPacketBytes(packetData as NSData, af)
+          packetBatch.append((packetData as NSData, af))
+        }
+
+        if !packetBatch.isEmpty {
+          self.mihomoQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
+            self.runWithMihomoAutoreleasePool {
+              for (packetData, af) in packetBatch {
+                _ = MobileFeedPacketBytes(packetData, af)
+              }
+            }
           }
         }
       }
-      // Async dispatch to prevent stack overflow and high CPU usage from synchronous recursion
       DispatchQueue.main.async { [weak self] in
-        self?.startReadPacketsLoop()
+        guard let self else { return }
+        guard self.isTunnelActive(lifecycleID: lifecycleID) else { return }
+        self.startReadPacketsLoop(lifecycleID: lifecycleID)
       }
     }
   }
 
-  private func startPathMonitor() {
+  private func startPathMonitor(lifecycleID: UInt64) {
     let monitor = NWPathMonitor()
-    monitor.pathUpdateHandler = { _ in
+    monitor.pathUpdateHandler = { [weak self] _ in
+      guard let self else { return }
+      guard self.isTunnelActive(lifecycleID: lifecycleID) else { return }
       if !self.hasObservedInitialPathUpdate {
         self.hasObservedInitialPathUpdate = true
         return
@@ -468,10 +521,53 @@ tun:
         return
       }
       self.lastPathRestartAt = now
-      _ = MobileRestartTunnelForNetworkChange()
+      self.mihomoQueue.async {
+        guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
+        self.runWithMihomoAutoreleasePool {
+          _ = MobileRestartTunnelForNetworkChange()
+        }
+      }
     }
     monitor.start(queue: DispatchQueue(label: "com.accelerator.tg.packettunnel.path"))
     pathMonitor = monitor
+  }
+
+  private func beginTunnelLifecycle() -> UInt64 {
+    return stateQueue.sync {
+      lifecycleID += 1
+      tunnelActive = true
+      coreRunning = false
+      return lifecycleID
+    }
+  }
+
+  private func endTunnelLifecycle() {
+    stateQueue.sync {
+      lifecycleID += 1
+      tunnelActive = false
+      coreRunning = false
+    }
+  }
+
+  private func markCoreRunning(lifecycleID: UInt64) {
+    stateQueue.sync {
+      guard self.lifecycleID == lifecycleID, tunnelActive else { return }
+      coreRunning = true
+    }
+  }
+
+  private func isTunnelActive(lifecycleID: UInt64) -> Bool {
+    return stateQueue.sync {
+      self.lifecycleID == lifecycleID && tunnelActive
+    }
+  }
+
+  private func isCoreRunning(lifecycleID: UInt64? = nil) -> Bool {
+    return stateQueue.sync {
+      guard coreRunning else { return false }
+      guard let lifecycleID else { return tunnelActive }
+      return self.lifecycleID == lifecycleID && tunnelActive
+    }
   }
 
   private func finishStart(_ completionHandler: @escaping (Error?) -> Void, error: Error?) {
