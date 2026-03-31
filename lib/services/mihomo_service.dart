@@ -583,7 +583,11 @@ class MihomoService {
   Future<bool> _checkIsRunningNative() async {
     try {
       final bool? result = await _channel.invokeMethod('isRunning');
-      final resolved = result ?? false;
+      var resolved = result ?? false;
+      if (Platform.isIOS && !resolved) {
+        final mode = await probeMode(timeout: const Duration(milliseconds: 1200));
+        resolved = mode != null && mode.isNotEmpty;
+      }
       _cacheRunningState(resolved);
       return resolved;
     } catch (e) {
@@ -705,12 +709,20 @@ class MihomoService {
   }) async {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
-      final running = await checkIsRunning(forceRefresh: true);
-      if (running) {
+      if (Platform.isIOS) {
         final mode = await probeMode(timeout: _startupReadyProbeTimeout);
         if (mode != null && mode.isNotEmpty) {
           _cacheRunningState(true);
           return true;
+        }
+      } else {
+        final running = await checkIsRunning(forceRefresh: true);
+        if (running) {
+          final mode = await probeMode(timeout: _startupReadyProbeTimeout);
+          if (mode != null && mode.isNotEmpty) {
+            _cacheRunningState(true);
+            return true;
+          }
         }
       }
       await Future.delayed(_startupReadyPollInterval);

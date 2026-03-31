@@ -223,7 +223,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       } else if call.method == "getMode" || call.method == "getModeNative" {
           self.sendProviderStringMessage("getMode") { value in
             let mode = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-            result((mode?.isEmpty ?? true) ? "rule" : mode)
+            result((mode?.isEmpty ?? true) ? nil : mode)
           }
       } else if call.method == "getProxies" {
           self.sendProviderStringMessage("getProxies") { value in
@@ -434,24 +434,39 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           }
           self.cachedTunnelManager = manager
           let status = manager.connection.status
-          if status == .connected || status == .reasserting || status == .connecting || status == .disconnecting {
-            (manager.connection as? NETunnelProviderSession)?.stopVPNTunnel()
-            self.waitTunnelStopped(manager: manager, retries: 8) { stopped in
-              if stopped {
-                self.startTunnel(configContent: configContent, attempt: attempt, completion: completion)
-              } else {
+          if status == .connected || status == .reasserting {
+            self.markPostStartStatusDelay()
+            completion(nil)
+            return
+          }
+          if status == .connecting || status == .disconnecting {
+            self.waitTunnelReadyForStart(manager: manager, retries: 24) {
+              readyManager,
+              readyStatus in
+              if readyStatus == .connected || readyStatus == .reasserting {
+                self.markPostStartStatusDelay()
+                completion(nil)
+                return
+              }
+              if readyStatus == .connecting || readyStatus == .disconnecting {
                 self.completeTunnelStart(
-                  manager: manager,
+                  manager: readyManager,
                   configContent: configContent,
                   attempt: attempt,
                   error: NSError(
                     domain: "Tunnel",
                     code: -6,
-                    userInfo: [NSLocalizedDescriptionKey: "failed to stop existing tunnel"]
+                    userInfo: [NSLocalizedDescriptionKey: "tunnel not ready for start: \(readyStatus.rawValue)"]
                   ),
                   completion: completion
                 )
+                return
               }
+              self.startTunnel(
+                configContent: configContent,
+                attempt: attempt,
+                completion: completion
+              )
             }
             return
           }
@@ -480,6 +495,33 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             )
           }
         }
+      }
+    }
+  }
+
+  private func waitTunnelReadyForStart(
+    manager: NETunnelProviderManager,
+    retries: Int,
+    completion: @escaping (NETunnelProviderManager, NEVPNStatus) -> Void
+  ) {
+    loadTunnelManager(forceRefresh: true) { refreshedManager, _ in
+      let activeManager = refreshedManager ?? manager
+      let status = activeManager.connection.status
+      self.cachedTunnelManager = activeManager
+      if status != .connecting && status != .disconnecting {
+        completion(activeManager, status)
+        return
+      }
+      if retries <= 0 {
+        completion(activeManager, status)
+        return
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        self?.waitTunnelReadyForStart(
+          manager: activeManager,
+          retries: retries - 1,
+          completion: completion
+        )
       }
     }
   }
@@ -675,7 +717,10 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             completion(self.wrapError(stage: "permission.loadFromPreferences", error: loadError))
           } else {
             self.cachedTunnelManager = manager
-            completion(nil)
+            self.waitTunnelReadyForStart(manager: manager, retries: 24) {
+              _, _ in
+              completion(nil)
+            }
           }
         }
       }
