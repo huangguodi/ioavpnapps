@@ -228,12 +228,25 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           }
       } else if call.method == "getMode" || call.method == "getModeNative" {
           self.sendProviderStringMessage("getMode") { value in
-            let mode = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let mode = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             result((mode?.isEmpty ?? true) ? nil : mode)
           }
       } else if call.method == "getProxies" {
           self.sendProviderStringMessage("getProxies") { value in
-            result(value ?? "{}")
+            guard let val = value else {
+              result("{}")
+              return
+            }
+            if val.hasPrefix("file://") {
+              let path = String(val.dropFirst(7))
+              if let content = try? String(contentsOfFile: path, encoding: .utf8) {
+                result(content)
+              } else {
+                result("{}")
+              }
+            } else {
+              result(val)
+            }
           }
       } else if call.method == "urlTest" {
           let args = call.arguments as? [String: Any]

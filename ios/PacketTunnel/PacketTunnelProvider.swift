@@ -17,11 +17,12 @@ import Network
 @_silgen_name("MobileSetAppGroupDirectory") private func MobileSetAppGroupDirectory(_ dir: NSString?) -> Bool
 @_silgen_name("MobileSetPacketFlowBridge") private func MobileSetPacketFlowBridge(_ bridge: AnyObject?)
 @_silgen_name("MobileClearPacketFlowBridge") private func MobileClearPacketFlowBridge()
-@_silgen_name("MobileFeedPacketFromFlow") private func MobileFeedPacketFromFlow(_ packet: AnyObject?) -> Bool
-@_silgen_name("MobileNewPacketFlowPacket") private func MobileNewPacketFlowPacket(_ data: NSData?, _ af: Int64) -> AnyObject?
+@_silgen_name("MobileFeedPacketBytes") private func MobileFeedPacketBytes(_ data: NSData?, _ af: Int64) -> Bool
+@_silgen_name("MobileResetNetwork") private func MobileResetNetwork()
+@_silgen_name("MobileSetSocketProtector") private func MobileSetSocketProtector(_ protector: AnyObject?)
+@_silgen_name("MobileClearSocketProtector") private func MobileClearSocketProtector()
 @_silgen_name("MobileSleep") private func MobileSleep()
 @_silgen_name("MobileWake") private func MobileWake() -> Bool
-@_silgen_name("MobileRestartTunnelForNetworkChange") private func MobileRestartTunnelForNetworkChange() -> Bool
 
 final class PacketFlowBridgeAdapter: NSObject {
   private let packetFlow: NEPacketTunnelFlow
@@ -47,13 +48,30 @@ final class PacketFlowBridgeAdapter: NSObject {
   @objc(writePacket:)
   func writePacket(_ packet: AnyObject?) -> Bool {
     guard let packet else { return false }
-    guard let rawData = packet.perform(NSSelectorFromString("data"))?.takeUnretainedValue() as? Data else { return false }
-    guard let afNum = packet.perform(NSSelectorFromString("af"))?.takeUnretainedValue() as? NSNumber else { return false }
-    let af = afNum.int32Value
-    if af != AF_INET && af != AF_INET6 {
-      return false
+    return autoreleasepool {
+      guard let rawData = packet.perform(NSSelectorFromString("data"))?.takeUnretainedValue() as? Data else { return false }
+      guard let afNum = packet.perform(NSSelectorFromString("af"))?.takeUnretainedValue() as? NSNumber else { return false }
+      let af = afNum.int32Value
+      if af != AF_INET && af != AF_INET6 {
+        return false
+      }
+      packetFlow.writePackets([rawData], withProtocols: [NSNumber(value: af)])
+      return true
     }
-    packetFlow.writePackets([rawData], withProtocols: [NSNumber(value: af)])
+  }
+}
+
+final class SocketProtectorAdapter: NSObject {
+  // Currently unused since NEPacketTunnelProvider doesn't provide a mark socket API for file descriptors directly
+  // But we provide the implementation for the libmihomo hook.
+  
+  @objc(markSocket:network:address:)
+  func markSocket(_ fd: Int64, network: NSString?, address: NSString?) -> Bool {
+    return true
+  }
+  
+  @objc(protectSocket:network:address:)
+  func protectSocket(_ fd: Int64, network: NSString?, address: NSString?) -> Bool {
     return true
   }
 }
@@ -67,6 +85,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let dnsServers = ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888"]
   private let pathRestartThrottle: TimeInterval = 2.0
   private var bridge: PacketFlowBridgeAdapter?
+  private var socketProtector: SocketProtectorAdapter?
   private var pathMonitor: NWPathMonitor?
   private var homeURL: URL?
   private var hasObservedInitialPathUpdate = false
@@ -125,6 +144,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       }
       self.bridge = bridge
       MobileSetPacketFlowBridge(bridge)
+      
+      let protector = SocketProtectorAdapter()
+      self.socketProtector = protector
+      MobileSetSocketProtector(protector)
+      
       self.startReadPacketsLoop()
       MobileStart(groupURL.path as NSString, "config.yaml")
       self.startPathMonitor()
@@ -184,6 +208,8 @@ tun:
     lastPathRestartAt = Date.distantPast
     MobileClearPacketFlowBridge()
     bridge = nil
+    MobileClearSocketProtector()
+    socketProtector = nil
     MobileStop()
     completionHandler()
   }
@@ -195,7 +221,7 @@ tun:
 
   override func wake() {
     if !MobileWake() {
-      _ = MobileRestartTunnelForNetworkChange()
+      MobileResetNetwork()
     }
   }
 
@@ -255,7 +281,13 @@ tun:
       return (MobileGetMode() as String).data(using: .utf8)
     }
     if message == "getProxies" {
-      return (MobileGetProxies() as String).data(using: .utf8)
+      let proxiesJson = MobileGetProxies() as String
+      if let home = homeURL {
+        let fileURL = home.appendingPathComponent("proxies.json")
+        try? proxiesJson.write(to: fileURL, atomically: true, encoding: .utf8)
+        return "file://\(fileURL.path)".data(using: .utf8)
+      }
+      return proxiesJson.data(using: .utf8)
     }
     if message.hasPrefix("getSelectedProxy|") {
       let groupName = String(message.dropFirst("getSelectedProxy|".count))
@@ -293,9 +325,7 @@ tun:
             continue
           }
           autoreleasepool {
-            if let mobilePacket = MobileNewPacketFlowPacket(packetData as NSData, af) {
-              _ = MobileFeedPacketFromFlow(mobilePacket)
-            }
+            _ = MobileFeedPacketBytes(packetData as NSData, af)
           }
         }
       }
@@ -318,7 +348,7 @@ tun:
         return
       }
       self.lastPathRestartAt = now
-      _ = MobileRestartTunnelForNetworkChange()
+      MobileResetNetwork()
     }
     monitor.start(queue: DispatchQueue(label: "com.accelerator.tg.packettunnel.path"))
     pathMonitor = monitor

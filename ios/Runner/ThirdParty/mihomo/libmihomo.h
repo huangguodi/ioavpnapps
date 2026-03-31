@@ -42,7 +42,16 @@ FOUNDATION_EXPORT void MobileClearPacketFlowBridge(void);
 
 FOUNDATION_EXPORT void MobileClearSocketProtector(void);
 
+/**
+ * FeedPacketBytes feeds raw bytes directly into the tun device to avoid CGO object lifecycle issues.
+This implements Core Optimization Point 1 (MobileFeedPacketBytes).
+ */
+FOUNDATION_EXPORT BOOL MobileFeedPacketBytes(NSData* _Nullable data, int64_t af);
+
 FOUNDATION_EXPORT BOOL MobileFeedPacketFromFlow(MobilePacketFlowPacket* _Nullable packet);
+
+// skipped function FeedPacketsBytesBatch with unsupported parameter or return types
+
 
 FOUNDATION_EXPORT void MobileForceUpdateConfig(NSString* _Nullable configFileName);
 
@@ -53,6 +62,12 @@ FOUNDATION_EXPORT NSString* _Nonnull MobileGetProxies(void);
 FOUNDATION_EXPORT MobilePacketFlowPacket* _Nullable MobileNewPacketFlowPacket(NSData* _Nullable data, int64_t af);
 
 FOUNDATION_EXPORT NSString* _Nonnull MobileProxyNames(void);
+
+/**
+ * ResetNetwork provides a lightweight way to clear invalid connections and DNS cache
+during iOS sleep/wake or network switching, without full tunnel restart (Optimization Point 6)
+ */
+FOUNDATION_EXPORT void MobileResetNetwork(void);
 
 FOUNDATION_EXPORT BOOL MobileRestartTunnelForNetworkChange(void);
 
