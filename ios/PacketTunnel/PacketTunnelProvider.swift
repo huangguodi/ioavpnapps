@@ -14,12 +14,12 @@ final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridgeProtocol {
   }
 
   @objc(onPacketFlowError:)
-  func onPacketFlowError(_ message: NSString?) {
-    onError(message as String? ?? "packet flow bridge error")
+  func onPacketFlowError(_ message: String?) {
+    onError(message ?? "packet flow bridge error")
   }
 
   @objc(readPacket)
-  func readPacket() -> AnyObject? {
+  func readPacket() -> MobilePacketFlowPacket? {
     return nil
   }
 
@@ -43,12 +43,12 @@ final class SocketProtectorAdapter: NSObject, MobileSocketProtectorProtocol {
   // But we provide the implementation for the libmihomo hook.
   
   @objc(markSocket:network:address:)
-  func markSocket(_ fd: Int64, network: NSString?, address: NSString?) -> Bool {
+  func markSocket(_ fd: Int64, network: String?, address: String?) -> Bool {
     return true
   }
   
   @objc(protectSocket:network:address:)
-  func protectSocket(_ fd: Int64, network: NSString?, address: NSString?) -> Bool {
+  func protectSocket(_ fd: Int64, network: String?, address: String?) -> Bool {
     return true
   }
 }
@@ -75,7 +75,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
   override init() {
     super.init()
-    MihomoWarmup()
+    MobileMihomoWarmup()
   }
 
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -421,19 +421,19 @@ tun:
 
   private func mobileGetModeString() -> String {
     return autoreleasepool {
-      return MobileGetMode() ?? ""
+      return MobileGetMode()
     }
   }
 
   private func mobileGetProxiesString() -> String {
     return autoreleasepool {
-      return MobileGetProxies() ?? ""
+      return MobileGetProxies()
     }
   }
 
   private func mobileTestLatencyString(_ proxyName: String) -> String {
     return autoreleasepool {
-      return MobileTestLatency(proxyName) ?? ""
+      return MobileTestLatency(proxyName)
     }
   }
 
