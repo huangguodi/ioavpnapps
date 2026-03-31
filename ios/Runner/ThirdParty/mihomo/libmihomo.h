@@ -7,8 +7,7 @@
 #define __Mobile_H__
 
 @import Foundation;
-#include "ref.h"
-#include "Universe.objc.h"
+@protocol goSeqRefInterface;
 
 
 @class MobilePacketFlowPacket;
