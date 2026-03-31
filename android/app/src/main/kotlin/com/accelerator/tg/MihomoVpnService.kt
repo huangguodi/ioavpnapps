@@ -315,7 +315,9 @@ tun:
         var replaced = false
         while (i < lines.size) {
             val line = lines[i]
-            if (!replaced && line.trim() == "tun:") {
+            val trimmedLine = line.trim()
+            val isTopLevelTunLine = !line.startsWith(" ") && !line.startsWith("\t") && trimmedLine.startsWith("tun:")
+            if (!replaced && isTopLevelTunLine) {
                 out.addAll(tunBlock.lines())
                 replaced = true
                 i++

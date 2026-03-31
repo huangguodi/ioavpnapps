@@ -166,7 +166,9 @@ tun:
     var replaced = false
     while index < lines.count {
       let line = lines[index]
-      if !replaced && line.trimmingCharacters(in: .whitespacesAndNewlines) == "tun:" {
+      let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      let isTopLevelTunLine = !line.hasPrefix(" ") && !line.hasPrefix("\t") && trimmedLine.hasPrefix("tun:")
+      if !replaced && isTopLevelTunLine {
         output.append(contentsOf: tunBlock.components(separatedBy: .newlines))
         replaced = true
         index += 1

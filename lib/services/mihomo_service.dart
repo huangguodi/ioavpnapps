@@ -722,13 +722,21 @@ class MihomoService {
     while (DateTime.now().isBefore(deadline)) {
       if (Platform.isIOS) {
         final running = await checkIsRunning(forceRefresh: true);
-        if (running) {
-          return true;
-        }
         final mode = await probeMode(timeout: _startupReadyProbeTimeout);
         if (mode != null && mode.isNotEmpty) {
           _cacheRunningState(true);
           return true;
+        }
+        if (running) {
+          final lastNativeStartAt = _lastNativeStartAt;
+          final withinGraceWindow =
+              _isRunning &&
+              lastNativeStartAt != null &&
+              DateTime.now().difference(lastNativeStartAt) <=
+                  _iosRunningGraceWindow;
+          if (!withinGraceWindow) {
+            return true;
+          }
         }
       } else {
         final running = await checkIsRunning(forceRefresh: true);
