@@ -22,6 +22,16 @@
   - `ios/PacketTunnel/PacketTunnelProvider.swift` 已补 IPv6 地址 / 默认路由 / IPv6 DNS
   - `ios/PacketTunnel/PacketTunnelProvider.swift` 的 `wake()` 在 `MobileWake()` 失败时会触发一次 `MobileRestartTunnelForNetworkChange()`
   - `ios/PacketTunnel/PacketTunnelProvider.swift` 的 `NWPathMonitor` 已增加首次回调忽略与重启节流，降低网络切换抖动
+- 本轮 iOS / mihomo 记忆:
+  - `ios/PacketTunnel/PacketTunnel-Bridging-Header.h` 与 `ios/Runner/Runner-Bridging-Header.h` 都已直接引入 `ios/Runner/ThirdParty/mihomo/libmihomo.h`；后续优先走头文件桥接，不要再手写 `_silgen_name` + `Unmanaged`
+  - `ios/PacketTunnel/PacketTunnelProvider.swift` 现已改为强类型调用 `Mobile*` 接口；`writePacket` 不再用 `perform(...).takeUnretainedValue()`
+  - `ios/PacketTunnel/PacketTunnelProvider.swift` 在启动时会先注册 bridge / socket protector、提前启动 `readPackets` 循环、把注入后的配置写入 App Group 下 `config.yaml`，再调用 `MobileMobileStartWithMemory(...)`
+  - `ios/PacketTunnel/PacketTunnelProvider.swift` 的 `sleep()` / `wake()` / `NWPathMonitor` 网络切换当前优先走轻量 `MobileResetNetwork()`，不再默认重启整个 core
+  - `ios/PacketTunnel/PacketTunnel.entitlements` 已补 `com.apple.security.network.client` 与 `com.apple.security.network.server`
+  - 用户提供了内核源码目录 `mihomo-clash/ios/mihomo`；iOS 静态库构建脚本在 `mihomo-clash/ios/mihomo/.github/scripts/build-ios-static.sh`
+  - `mihomo-clash/ios/mihomo/mobile/mobile.go` / `mobile_c_api.go` 已补 iOS 内存启动状态保持：新增 `lastConfigBytes`，`MobileStartWithMemory` 会保存内存配置副本；`Wake()` / `RestartTunnelForNetworkChange()` / `ForceUpdateConfig()` 可从内存配置恢复
+  - `mihomo-clash/ios/mihomo/mobile/mobile.go` 已抽出 `applyIOSActiveConfig()` / `loadIOSConfigLocked()`，统一复用 keepalive、UDP timeout、定时 `debug.FreeOSMemory()` 等 iOS 稳定化逻辑
+  - 当前 Windows 环境下已完成源码级修复与 `go test ./mobile` 校验，但尚未真正重编新的 `libmihomo.a`；正式替换需在 macOS 上执行构建脚本后，把新产物覆盖到 `ios/Runner/ThirdParty/mihomo/`
 
 ## 热更新
 
