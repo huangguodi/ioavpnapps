@@ -556,7 +556,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     if nsError.domain == "Tunnel" && (nsError.code == -4 || nsError.code == -5) {
       return true
     }
-    if nsError.domain == NEVPNConnectionErrorDomain {
+    if nsError.domain == "NEVPNConnectionErrorDomain" {
       return true
     }
     return false
