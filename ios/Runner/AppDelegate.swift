@@ -218,12 +218,14 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           
           self.fileIOQueue.async {
               if let userDefaults = UserDefaults(suiteName: self.appGroupIdentifier) {
+                  // 这里是将 Flutter 传过来的配置写入内存供 Extension 读取
                   userDefaults.set(configContent, forKey: "vpn_config_content")
                   userDefaults.set(1, forKey: "vpn_config_status") // 1 = has config
                   userDefaults.synchronize()
               }
               
               DispatchQueue.main.async {
+                  // 启动扩展进程，扩展进程会去读上面的内存
                   self.startTunnel(configContent: configContent) { error in
                       if let error = error {
                           result(FlutterError(code: "START_FAILED", message: self.describeError(error), details: nil))

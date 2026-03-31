@@ -170,12 +170,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       
       self.mihomoQueue.async {
         do {
-          var tunConfig = self.injectTunConfig(configContent)
-          tunConfig.withCString { cString in
-            MobileStartWithMemory(UnsafeMutablePointer(mutating: cString))
+          let tunConfig = self.injectTunConfig(configContent)
+          if let cString = strdup(tunConfig) {
+            MobileStartWithMemory(cString)
           }
-        } catch {
-          // ignore error to prevent crash
         }
       }
       
