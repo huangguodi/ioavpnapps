@@ -56,9 +56,9 @@ final class SocketProtectorAdapter: NSObject, MobileSocketProtector {
 final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let defaultAppGroup = "group.com.xiangyu.clash"
   private let tunnelRemoteAddress = "127.0.0.1"
-  private let ipv4Address = "198.18.0.1"
-  private let ipv4SubnetMask = "255.255.255.0"
-  private let ipv6Address = "fd00:1234:ffff::10"
+  private let ipv4Address = "172.19.0.1"
+  private let ipv4SubnetMask = "255.255.255.252"
+  private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
   private let dnsServers = ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888"]
   private let pathRestartThrottle: TimeInterval = 2.0
