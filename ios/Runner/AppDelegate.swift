@@ -442,38 +442,33 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
             return
           }
           if status == .connecting || status == .disconnecting {
-            self.waitTunnelReadyForStart(manager: manager, retries: 24) {
-              readyManager,
-              readyStatus in
-              if readyStatus == .connected || readyStatus == .reasserting {
-                self.markPostStartStatusDelay()
-                completion(nil)
-                return
-              }
-              if readyStatus == .connecting || readyStatus == .disconnecting {
+            // It is in a transition state. Stop it first, then wait for it to become inactive.
+            (manager.connection as? NETunnelProviderSession)?.stopVPNTunnel()
+            self.waitTunnelStopped(manager: manager, retries: 24) { stopped in
+              if !stopped {
                 self.completeTunnelStart(
-                  manager: readyManager,
+                  manager: manager,
                   configContent: configContent,
                   attempt: attempt,
                   error: NSError(
                     domain: "Tunnel",
                     code: -6,
-                    userInfo: [NSLocalizedDescriptionKey: "tunnel not ready for start: \(readyStatus.rawValue)"]
+                    userInfo: [NSLocalizedDescriptionKey: "tunnel not ready for start: stuck in transition"]
                   ),
                   completion: completion
                 )
                 return
               }
-              // 如果变成 .invalid 或者是 .disconnected，应该继续往下执行真正的 startVPNTunnel
+              // Now it's stopped, try starting it
               do {
-                guard let session = readyManager.connection as? NETunnelProviderSession else {
+                guard let session = manager.connection as? NETunnelProviderSession else {
                   completion(NSError(domain: "Tunnel", code: -3, userInfo: [NSLocalizedDescriptionKey: "invalid tunnel session"]))
                   return
                 }
                 try session.startVPNTunnel()
-                self.waitTunnelConnected(manager: readyManager, retries: 8) { error in
+                self.waitTunnelConnected(manager: manager, retries: 8) { error in
                   self.completeTunnelStart(
-                    manager: readyManager,
+                    manager: manager,
                     configContent: configContent,
                     attempt: attempt,
                     error: error,
@@ -482,7 +477,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
                 }
               } catch {
                 self.completeTunnelStart(
-                  manager: readyManager,
+                  manager: manager,
                   configContent: configContent,
                   attempt: attempt,
                   error: self.wrapError(stage: "startVPNTunnel", error: error),
@@ -530,7 +525,8 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       let activeManager = refreshedManager ?? manager
       let status = activeManager.connection.status
       self.cachedTunnelManager = activeManager
-      if status != .connecting && status != .disconnecting && status != .invalid {
+      // Only return if it is no longer connecting or disconnecting.
+      if status != .connecting && status != .disconnecting {
         completion(activeManager, status)
         return
       }
