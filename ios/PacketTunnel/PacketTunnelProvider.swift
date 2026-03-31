@@ -24,7 +24,7 @@ final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
   }
 
   @objc(writePacket:)
-  func writePacket(_ packet: MobilePacketFlowPacket?) -> Bool {
+  func write(_ packet: MobilePacketFlowPacket?) -> Bool {
     guard let packet else { return false }
     return autoreleasepool {
       guard let rawData = packet.data() else { return false }
