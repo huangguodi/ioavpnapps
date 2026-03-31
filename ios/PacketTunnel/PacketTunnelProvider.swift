@@ -3,7 +3,7 @@ import NetworkExtension
 import Network
 
 @_silgen_name("MobileStartWithMemory") private func MobileStartWithMemory(_ configC: UnsafeMutablePointer<CChar>?)
-@_silgen_name("MihomoWarmup") private func MihomoWarmup()
+@_silgen_name("MobileMihomoWarmup") private func MihomoWarmup()
 @_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
 @_silgen_name("MobileStop") private func MobileStop()
 @_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
