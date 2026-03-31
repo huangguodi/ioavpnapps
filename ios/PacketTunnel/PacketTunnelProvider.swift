@@ -7,10 +7,10 @@ import Network
 @_silgen_name("MobileStart") private func MobileStart(_ home: NSString?, _ configFileName: NSString?)
 @_silgen_name("MobileStop") private func MobileStop()
 @_silgen_name("MobileSetMode") private func MobileSetMode(_ mode: NSString?)
-@_silgen_name("MobileGetMode") private func MobileGetMode() -> NSString
-@_silgen_name("MobileGetProxies") private func MobileGetProxies() -> NSString
+@_silgen_name("MobileGetMode") private func MobileGetMode() -> Unmanaged<AnyObject>?
+@_silgen_name("MobileGetProxies") private func MobileGetProxies() -> Unmanaged<AnyObject>?
 @_silgen_name("MobileSelectProxy") private func MobileSelectProxy(_ groupName: NSString?, _ proxyName: NSString?) -> Bool
-@_silgen_name("MobileTestLatency") private func MobileTestLatency(_ proxyName: NSString?) -> NSString
+@_silgen_name("MobileTestLatency") private func MobileTestLatency(_ proxyName: NSString?) -> Unmanaged<AnyObject>?
 @_silgen_name("MobileForceUpdateConfig") private func MobileForceUpdateConfig(_ configFileName: NSString?)
 @_silgen_name("MobileTrafficUp") private func MobileTrafficUp() -> Int64
 @_silgen_name("MobileTrafficDown") private func MobileTrafficDown() -> Int64
@@ -450,7 +450,9 @@ tun:
     }
   }
 
-  private func copySwiftString(_ value: NSString) -> String {
+  private func copySwiftString(_ unmanagedValue: Unmanaged<AnyObject>?) -> String {
+    guard let unmanagedValue else { return "" }
+    guard let value = unmanagedValue.takeUnretainedValue() as? NSString else { return "" }
     let maxLength = value.lengthOfBytes(using: String.Encoding.utf8.rawValue) + 1
     var buffer = [CChar](repeating: 0, count: maxLength)
     if value.getCString(&buffer, maxLength: maxLength, encoding: String.Encoding.utf8.rawValue) {
