@@ -90,6 +90,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private var homeURL: URL?
   private var hasObservedInitialPathUpdate = false
   private var lastPathRestartAt = Date.distantPast
+  private let mihomoQueue = DispatchQueue(label: "com.accelerator.tg.mihomo.core", qos: .userInitiated)
 
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
     let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
@@ -150,7 +151,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       MobileSetSocketProtector(protector)
       
       self.startReadPacketsLoop()
-      MobileStart(groupURL.path as NSString, "config.yaml")
+      
+      // Dispatch heavy CGO init to a background queue to avoid Watchdog SIGABRT
+      self.mihomoQueue.async {
+        MobileStart(groupURL.path as NSString, "config.yaml")
+      }
+      
       self.startPathMonitor()
       completionHandler(nil)
     }
@@ -210,8 +216,13 @@ tun:
     bridge = nil
     MobileClearSocketProtector()
     socketProtector = nil
-    MobileStop()
-    completionHandler()
+    
+    mihomoQueue.async {
+      MobileStop()
+      DispatchQueue.main.async {
+        completionHandler()
+      }
+    }
   }
 
   override func sleep(completionHandler: @escaping () -> Void) {
@@ -226,54 +237,58 @@ tun:
   }
 
   override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
-    if let message = String(data: messageData, encoding: .utf8),
-       let response = handleLightweightAppMessage(message) {
-      completionHandler?(response)
-      return
+    mihomoQueue.async { [weak self] in
+      guard let self else { return }
+      
+      if let message = String(data: messageData, encoding: .utf8),
+         let response = self.handleLightweightAppMessage(message) {
+        completionHandler?(response)
+        return
+      }
+
+      guard
+        let object = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
+        let action = object["action"] as? String
+      else {
+        completionHandler?(nil)
+        return
+      }
+
+      var response: [String: Any] = ["ok": true]
+
+      switch action {
+      case "changeMode":
+        let mode = (object["mode"] as? String ?? "rule") as NSString
+        MobileSetMode(mode)
+      case "getMode":
+        response["value"] = MobileGetMode() as String
+      case "getProxies":
+        response["value"] = MobileGetProxies() as String
+      case "getSelectedProxy":
+        let groupName = object["groupName"] as? String ?? "GLOBAL"
+        let proxiesJson = MobileGetProxies() as String
+        response["value"] = self.extractSelectedProxy(groupName: groupName, proxiesJson: proxiesJson) ?? ""
+      case "urlTest":
+        let name = (object["name"] as? String ?? "GLOBAL") as NSString
+        response["value"] = MobileTestLatency(name) as String
+      case "selectProxy":
+        let groupName = object["groupName"] as? String ?? "GLOBAL"
+        let proxyName = object["proxyName"] as? String ?? ""
+        response["ok"] = MobileSelectProxy(groupName as NSString, proxyName as NSString)
+      case "reloadConfig":
+        MobileForceUpdateConfig("config.yaml")
+      case "getTraffic":
+        response["up"] = MobileTrafficUp()
+        response["down"] = MobileTrafficDown()
+        response["totalUp"] = MobileTrafficTotalUp()
+        response["totalDown"] = MobileTrafficTotalDown()
+      default:
+        response["ok"] = false
+      }
+
+      let data = try? JSONSerialization.data(withJSONObject: response)
+      completionHandler?(data)
     }
-
-    guard
-      let object = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
-      let action = object["action"] as? String
-    else {
-      completionHandler?(nil)
-      return
-    }
-
-    var response: [String: Any] = ["ok": true]
-
-    switch action {
-    case "changeMode":
-      let mode = (object["mode"] as? String ?? "rule") as NSString
-      MobileSetMode(mode)
-    case "getMode":
-      response["value"] = MobileGetMode() as String
-    case "getProxies":
-      response["value"] = MobileGetProxies() as String
-    case "getSelectedProxy":
-      let groupName = object["groupName"] as? String ?? "GLOBAL"
-      let proxiesJson = MobileGetProxies() as String
-      response["value"] = extractSelectedProxy(groupName: groupName, proxiesJson: proxiesJson) ?? ""
-    case "urlTest":
-      let name = (object["name"] as? String ?? "GLOBAL") as NSString
-      response["value"] = MobileTestLatency(name) as String
-    case "selectProxy":
-      let groupName = object["groupName"] as? String ?? "GLOBAL"
-      let proxyName = object["proxyName"] as? String ?? ""
-      response["ok"] = MobileSelectProxy(groupName as NSString, proxyName as NSString)
-    case "reloadConfig":
-      MobileForceUpdateConfig("config.yaml")
-    case "getTraffic":
-      response["up"] = MobileTrafficUp()
-      response["down"] = MobileTrafficDown()
-      response["totalUp"] = MobileTrafficTotalUp()
-      response["totalDown"] = MobileTrafficTotalDown()
-    default:
-      response["ok"] = false
-    }
-
-    let data = try? JSONSerialization.data(withJSONObject: response)
-    completionHandler?(data)
   }
 
   private func handleLightweightAppMessage(_ message: String) -> Data? {
