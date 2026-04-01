@@ -73,7 +73,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let enableIPv6Route = false
   private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
-  private let tunnelMTU = 1400
+  private let tunnelMTU = 1500
   private let pathRestartThrottle: TimeInterval = 2.0
   private var bridge: PacketFlowBridgeAdapter?
   private var socketProtector: SocketProtectorAdapter?
@@ -275,36 +275,70 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   }
 
   private func injectTunConfig(_ configContent: String) -> String {
-    let tunBlock = """
+    let injectedBlock = """
 tun:
   enable: true
   stack: gvisor
   auto-route: true
   auto-detect-interface: true
   auto-redirect: false
+  strict-route: true
   mtu: \(tunnelMTU)
   inet4-address:
     - \(ipv4Address)/\(ipv4PrefixLength)
   dns-hijack:
-    - any:53
-    - tcp://any:53
+    - 0.0.0.0:53
+    - tcp://0.0.0.0:53
   exclude-route:
     - 127.0.0.0/8
     - 10.0.0.0/8
     - 172.16.0.0/12
     - 192.168.0.0/16
+    - 224.0.0.0/4
+    - 255.255.255.255/32
+  ipv6: false
+dns:
+  default-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  enable: true
+  enhanced-mode: redir-host
+  listen: 0.0.0.0:53
+  fallback:
+    - https://doh-pure.onedns.net/dns-query
+    - https://ada.openbld.net/dns-query
+    - https://223.5.5.5/dns-query
+    - https://223.6.6.6/dns-query
+  fallback-filter:
+    geoip: false
+    ipcidr:
+      - 240.0.0.0/4
+      - 0.0.0.0/32
+  ipv6: false
+  nameserver:
+    - https://doh.pub/dns-query
+    - https://dns.alidns.com/dns-query
+  proxy-server-nameserver:
+    - 223.5.5.5
+    - 119.29.29.29
+  use-hosts: true
 """
     let lines = configContent.components(separatedBy: .newlines)
     var output: [String] = []
     var index = 0
-    var replaced = false
+    var replacedTun = false
+    var skipDns = false
+
     while index < lines.count {
       let line = lines[index]
       let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      
       let isTopLevelTunLine = !line.hasPrefix(" ") && !line.hasPrefix("\t") && trimmedLine.hasPrefix("tun:")
-      if !replaced && isTopLevelTunLine {
-        output.append(contentsOf: tunBlock.components(separatedBy: .newlines))
-        replaced = true
+      let isTopLevelDnsLine = !line.hasPrefix(" ") && !line.hasPrefix("\t") && trimmedLine.hasPrefix("dns:")
+
+      if !replacedTun && isTopLevelTunLine {
+        output.append(contentsOf: injectedBlock.components(separatedBy: .newlines))
+        replacedTun = true
         index += 1
         while index < lines.count {
           let next = lines[index]
@@ -317,12 +351,30 @@ tun:
         }
         continue
       }
+      
+      if isTopLevelDnsLine {
+        skipDns = true
+        index += 1
+        while index < lines.count {
+          let next = lines[index]
+          if !next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+              !next.hasPrefix(" ") &&
+              !next.hasPrefix("\t") {
+            break
+          }
+          index += 1
+        }
+        continue
+      }
+      
       output.append(line)
       index += 1
     }
-    if !replaced {
-      return configContent.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + tunBlock + "\n"
+    
+    if !replacedTun {
+      return configContent.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + injectedBlock + "\n"
     }
+    
     return output.joined(separator: "\n")
   }
 
