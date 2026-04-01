@@ -247,11 +247,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private func injectTunConfig(_ configContent: String) -> String {
     let tunBlock = """
 tun:
-  enable: true
+  enable: false
   stack: gvisor
   auto-route: true
   auto-detect-interface: true
-  auto-redirect: true
+  auto-redirect: false
   mtu: \(tunnelMTU)
   inet4-address:
     - \(ipv4Address)/\(ipv4PrefixLength)
