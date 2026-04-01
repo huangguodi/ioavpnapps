@@ -84,12 +84,35 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   }
 }
 
+final class TunnelStatusStreamHandler: NSObject, FlutterStreamHandler {
+  private var sink: FlutterEventSink?
+
+  func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+    sink = events
+    return nil
+  }
+
+  func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    sink = nil
+    return nil
+  }
+
+  func emit(_ event: [String: Any]) {
+    guard let sink else { return }
+    DispatchQueue.main.async {
+      sink(event)
+    }
+  }
+}
+
 @main
 @objc class AppDelegate: FlutterAppDelegate {
   private let tunnelBundleIdentifier = "com.xiangyu.clash.packettunnel"
   private let tunnelDescription = "Accelerator"
   private let appGroupIdentifier = "group.com.xiangyu.clash"
   private var trafficStreamHandler: TunnelTrafficStreamHandler?
+  private var tunnelStatusStreamHandler: TunnelStatusStreamHandler?
+  private var tunnelStatusObserver: NSObjectProtocol?
   private var channelsConfigured = false
   private var cachedTunnelManager: NETunnelProviderManager?
   private var isLoadingTunnelManager = false
@@ -102,6 +125,12 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   private var cachedProxiesJson: String?
   private var lastProxiesFileModification: Date?
   private let fileIOQueue = DispatchQueue(label: "com.accelerator.tg.fileio", qos: .userInitiated)
+
+  deinit {
+    if let tunnelStatusObserver {
+      NotificationCenter.default.removeObserver(tunnelStatusObserver)
+    }
+  }
 
   override func application(
     _ application: UIApplication,
@@ -120,6 +149,8 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
                                               binaryMessenger: controller.binaryMessenger)
     let trafficChannel = FlutterEventChannel(name: "com.accelerator.tg/mihomo/traffic",
                                              binaryMessenger: controller.binaryMessenger)
+    let statusChannel = FlutterEventChannel(name: "com.accelerator.tg/mihomo/status",
+                                            binaryMessenger: controller.binaryMessenger)
     let securityChannel = FlutterMethodChannel(name: "com.accelerator.tg/security",
                                                binaryMessenger: controller.binaryMessenger)
     let hotUpdateChannel = FlutterMethodChannel(name: "com.accelerator.tg/hot_update",
@@ -138,6 +169,11 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     }
     trafficStreamHandler = handler
     trafficChannel.setStreamHandler(handler)
+    let statusHandler = TunnelStatusStreamHandler()
+    tunnelStatusStreamHandler = statusHandler
+    statusChannel.setStreamHandler(statusHandler)
+    registerTunnelStatusObserverIfNeeded()
+    emitCurrentTunnelStatus(forceRefresh: true)
     securityChannel.setMethodCallHandler({
       (call: FlutterMethodCall, result: @escaping FlutterResult) -> Void in
       if call.method == "isDebuggerAttached" {
@@ -642,9 +678,11 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
     completion: @escaping (Error?) -> Void
   ) {
     guard let error else {
+      emitCurrentTunnelStatus(forceRefresh: true)
       completion(nil)
       return
     }
+    emitCurrentTunnelStatus(forceRefresh: true)
     enrichTunnelStartError(manager: manager, error: error) { resolvedError in
       guard
         self.shouldRetryTunnelStart(error: resolvedError, attempt: attempt)
@@ -664,6 +702,7 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       let activeManager = refreshedManager ?? manager
       let status = activeManager.connection.status
       self.cachedTunnelManager = activeManager
+      self.emitTunnelStatus(status)
       if status == .connected || status == .reasserting {
         self.markPostStartStatusDelay()
         completion(nil)
@@ -838,8 +877,37 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
   private func stopTunnel(completion: @escaping () -> Void) {
     loadTunnelManager { manager, _ in
       (manager?.connection as? NETunnelProviderSession)?.stopVPNTunnel()
+      self.emitCurrentTunnelStatus(forceRefresh: true)
       completion()
     }
+  }
+
+  private func registerTunnelStatusObserverIfNeeded() {
+    guard tunnelStatusObserver == nil else {
+      return
+    }
+    tunnelStatusObserver = NotificationCenter.default.addObserver(
+      forName: .NEVPNStatusDidChange,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      self?.emitCurrentTunnelStatus(forceRefresh: true)
+    }
+  }
+
+  private func emitCurrentTunnelStatus(forceRefresh: Bool) {
+    loadTunnelManager(forceRefresh: forceRefresh) { manager, _ in
+      let status = manager?.connection.status ?? .invalid
+      self.emitTunnelStatus(status)
+    }
+  }
+
+  private func emitTunnelStatus(_ status: NEVPNStatus) {
+    tunnelStatusStreamHandler?.emit([
+      "status": status.rawValue,
+      "statusText": tunnelStatusDescription(status),
+      "running": status == .connected || status == .reasserting || status == .connecting,
+    ])
   }
 
   private func sendProviderCommand(_ command: [String: Any], completion: @escaping ([String: Any]) -> Void) {

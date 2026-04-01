@@ -72,8 +72,12 @@ class MihomoService {
   // ignore: unused_field
   int _suppressedNativeConnectionLogCount = 0;
   StreamSubscription<dynamic>? _nativeLogsSubscription;
+  StreamSubscription<dynamic>? _iosTunnelStatusSubscription;
+  final StreamController<bool> _runningStateController =
+      StreamController<bool>.broadcast();
 
   bool get isRunning => _isRunning;
+  Stream<bool> get runningStateStream => _runningStateController.stream;
   String? get lastSelectedGlobalProxy => _lastSelectedGlobalProxy;
   Map<String, dynamic>? get cachedProxies {
     if (!_isProxyCacheFresh) {
@@ -131,9 +135,13 @@ class MihomoService {
   }
 
   void _cacheRunningState(bool isRunning) {
+    final changed = _isRunning != isRunning;
     _cachedIsRunning = isRunning;
     _cachedIsRunningAt = DateTime.now();
     _isRunning = isRunning;
+    if (changed && !_runningStateController.isClosed) {
+      _runningStateController.add(isRunning);
+    }
   }
 
   void _cacheMode(String mode) {
@@ -171,6 +179,45 @@ class MihomoService {
 
   Future<void> init() async {
     _listenToNativeLogs();
+    _listenToIosTunnelStatus();
+  }
+
+  void _listenToIosTunnelStatus() {
+    if (!Platform.isIOS || _iosTunnelStatusSubscription != null) {
+      return;
+    }
+    _iosTunnelStatusSubscription =
+        const EventChannel(
+          'com.accelerator.tg/mihomo/status',
+        ).receiveBroadcastStream().listen(
+          (event) {
+            bool? running;
+            if (event is Map) {
+              final raw = event['running'];
+              if (raw is bool) {
+                running = raw;
+              } else if (raw is num) {
+                running = raw != 0;
+              } else if (raw is String) {
+                final normalized = raw.trim().toLowerCase();
+                running = normalized == 'true' || normalized == '1';
+              }
+            } else if (event is bool) {
+              running = event;
+            }
+            if (running == null) {
+              return;
+            }
+            _cacheRunningState(running);
+            if (!running) {
+              _invalidateLightweightStatusCache();
+              _invalidateProxyCache();
+            }
+          },
+          onError: (error) {
+            AppLogger.e("MihomoService: iOS tunnel status stream error: $error");
+          },
+        );
   }
 
   /// Listen to native logs
@@ -1259,7 +1306,7 @@ class MihomoService {
         );
 
         if (_daemonConsecutiveFailures >= 3) {
-          _isRunning = false;
+          _cacheRunningState(false);
           _restartCount++;
           AppLogger.e(
             "MihomoService: Daemon check failed 3 times. Marking as not running. Restart count: $_restartCount",
@@ -1291,13 +1338,13 @@ class MihomoService {
           } else {
             AppLogger.e("MihomoService: Restart failed 3 times. Exiting app.");
             _isDaemonCheckActive = false;
-            _isRunning = false;
+            _cacheRunningState(false);
           }
         } else {
-          _isRunning = false;
+          _cacheRunningState(false);
         }
       } else {
-        _isRunning = true;
+        _cacheRunningState(true);
         _restartCount = 0;
         _daemonConsecutiveFailures = 0;
       }

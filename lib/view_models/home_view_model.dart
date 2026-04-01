@@ -62,6 +62,7 @@ class HomeViewModel extends ChangeNotifier {
   // Private
   bool _isPolling = false;
   StreamSubscription? _trafficSubscription;
+  StreamSubscription<bool>? _runningStateSubscription;
   Timer? _userInfoTimer;
   bool _isFetchingUserInfo = false;
   bool _isDisposed = false;
@@ -122,6 +123,25 @@ class HomeViewModel extends ChangeNotifier {
       _downloadSpeed = nextDownloadSpeed;
       notifyListeners();
     });
+    _runningStateSubscription = MihomoService().runningStateStream.listen((
+      running,
+    ) {
+      if (!Platform.isIOS || _isDisposed || _isSwitching) {
+        return;
+      }
+      if (running) {
+        return;
+      }
+      if (_connectionMode == ConnectionMode.off &&
+          _uploadSpeed == "0 B/s" &&
+          _downloadSpeed == "0 B/s") {
+        return;
+      }
+      _connectionMode = ConnectionMode.off;
+      _uploadSpeed = "0 B/s";
+      _downloadSpeed = "0 B/s";
+      notifyListeners();
+    });
   }
 
   @override
@@ -129,6 +149,7 @@ class HomeViewModel extends ChangeNotifier {
     _isDisposed = true;
     _stopPolling();
     _trafficSubscription?.cancel();
+    _runningStateSubscription?.cancel();
     super.dispose();
   }
 

@@ -33,10 +33,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let ipv6PrefixLength = 126
   private let tunnelMTU = 1500
   private let pathRestartThrottle: TimeInterval = 2.0
+  private let minCoreUptimeBeforePathRefresh: TimeInterval = 15.0
   private var socketProtector: SocketProtectorAdapter?
   private var pathMonitor: NWPathMonitor?
   private var homeURL: URL?
   private var hasObservedInitialPathUpdate = false
+  private var lastPathFingerprint: String?
   private var lastPathRestartAt = Date.distantPast
   private let mihomoQueue = DispatchQueue(label: "com.accelerator.tg.mihomo.core", qos: .userInitiated)
   private let stateQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.state")
@@ -44,6 +46,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private var lifecycleID: UInt64 = 0
   private var tunnelActive = false
   private var coreRunning = false
+  private var coreStartedAt = Date.distantPast
+  private var coreRecoveryAttempted = false
   private var debugLogURL: URL?
 
   override init() {
@@ -214,9 +218,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
           }
 
-          // MobileStart doesn't return an error in its signature, if it crashes it will crash the extension
           self.markCoreRunning(lifecycleID: lifecycleID)
-          self.appendDebugLog("core started lifecycle=\(lifecycleID)")
+          self.appendDebugLog("core start loop begin lifecycle=\(lifecycleID)")
           self.startPathMonitor(lifecycleID: lifecycleID)
           
           self.finishStart(completionHandler, error: nil)
@@ -225,7 +228,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.runWithMihomoAutoreleasePool {
               MobileStart(groupURL.path, "config.yaml")
             }
+            self.markCoreStopped(lifecycleID: lifecycleID)
             self.appendDebugLog("core exited lifecycle=\(lifecycleID)")
+            if self.isTunnelActive(lifecycleID: lifecycleID) {
+              self.handleUnexpectedCoreExit(lifecycleID: lifecycleID, groupURL: groupURL)
+            }
           }
         }
       }
@@ -238,10 +245,12 @@ tun:
   enable: true
   stack: gvisor
   file-descriptor: \(fd)
+  inet4-address:
+    - \(ipv4Address)/\(ipv4PrefixLength)
   auto-route: false
   auto-detect-interface: false
   auto-redirect: false
-  mtu: 1500
+  mtu: \(tunnelMTU)
   dns-hijack:
     - 0.0.0.0:53
     - "[::]:53"
@@ -289,6 +298,7 @@ tun:
     pathMonitor?.cancel()
     pathMonitor = nil
     hasObservedInitialPathUpdate = false
+    lastPathFingerprint = nil
     lastPathRestartAt = Date.distantPast
     endTunnelLifecycle()
     
@@ -476,14 +486,22 @@ tun:
 
   private func startPathMonitor(lifecycleID: UInt64) {
     let monitor = NWPathMonitor()
-    monitor.pathUpdateHandler = { [weak self] _ in
+    monitor.pathUpdateHandler = { [weak self] path in
       guard let self else { return }
       guard self.isTunnelActive(lifecycleID: lifecycleID) else { return }
+      let fingerprint = self.pathFingerprint(path)
       if !self.hasObservedInitialPathUpdate {
         self.hasObservedInitialPathUpdate = true
+        self.lastPathFingerprint = fingerprint
         return
       }
+      if fingerprint == self.lastPathFingerprint {
+        return
+      }
+      self.lastPathFingerprint = fingerprint
+      guard path.status == .satisfied else { return }
       let now = Date()
+      guard self.canForceConfigUpdate(lifecycleID: lifecycleID, now: now) else { return }
       if now.timeIntervalSince(self.lastPathRestartAt) < self.pathRestartThrottle {
         return
       }
@@ -500,11 +518,62 @@ tun:
     pathMonitor = monitor
   }
 
+  private func pathFingerprint(_ path: NWPath) -> String {
+    let statuses = path.availableInterfaces
+      .map { "\($0.type.rawValue)-\($0.name)" }
+      .sorted()
+      .joined(separator: ",")
+    return "\(path.status.rawValue)|\(path.isExpensive ? 1 : 0)|\(path.isConstrained ? 1 : 0)|\(statuses)"
+  }
+
+  private func handleUnexpectedCoreExit(lifecycleID: UInt64, groupURL: URL) {
+    if shouldAttemptCoreRecovery(lifecycleID: lifecycleID) {
+      appendDebugLog("core exited unexpectedly, attempting one recovery start")
+      DispatchQueue.global(qos: .userInitiated).async {
+        self.runWithMihomoAutoreleasePool {
+          MobileStart(groupURL.path, "config.yaml")
+        }
+        self.markCoreStopped(lifecycleID: lifecycleID)
+        self.appendDebugLog("core recovery start exited lifecycle=\(lifecycleID)")
+        if self.isTunnelActive(lifecycleID: lifecycleID) {
+          self.appendDebugLog("core recovery failed, cancel tunnel to recover system network")
+          self.cancelTunnelWithError(
+            NSError(
+              domain: "Tunnel",
+              code: -8,
+              userInfo: [NSLocalizedDescriptionKey: "mihomo core recovery failed"]
+            )
+          )
+        }
+      }
+      return
+    }
+    appendDebugLog("core exited unexpectedly, cancel tunnel to recover system network")
+    self.cancelTunnelWithError(
+      NSError(
+        domain: "Tunnel",
+        code: -7,
+        userInfo: [NSLocalizedDescriptionKey: "mihomo core exited unexpectedly"]
+      )
+    )
+  }
+
+  private func shouldAttemptCoreRecovery(lifecycleID: UInt64) -> Bool {
+    return stateQueue.sync {
+      guard self.lifecycleID == lifecycleID, tunnelActive, !coreRecoveryAttempted else { return false }
+      coreRecoveryAttempted = true
+      return true
+    }
+  }
+
   private func beginTunnelLifecycle() -> UInt64 {
     return stateQueue.sync {
       lifecycleID += 1
       tunnelActive = true
       coreRunning = false
+      coreStartedAt = Date.distantPast
+      coreRecoveryAttempted = false
+      lastPathFingerprint = nil
       return lifecycleID
     }
   }
@@ -514,6 +583,9 @@ tun:
       lifecycleID += 1
       tunnelActive = false
       coreRunning = false
+      coreStartedAt = Date.distantPast
+      coreRecoveryAttempted = false
+      lastPathFingerprint = nil
     }
   }
 
@@ -521,6 +593,15 @@ tun:
     stateQueue.sync {
       guard self.lifecycleID == lifecycleID, tunnelActive else { return }
       coreRunning = true
+      coreStartedAt = Date()
+    }
+  }
+
+  private func markCoreStopped(lifecycleID: UInt64) {
+    stateQueue.sync {
+      guard self.lifecycleID == lifecycleID else { return }
+      coreRunning = false
+      coreStartedAt = Date.distantPast
     }
   }
 
@@ -535,6 +616,13 @@ tun:
       guard coreRunning else { return false }
       guard let lifecycleID else { return tunnelActive }
       return self.lifecycleID == lifecycleID && tunnelActive
+    }
+  }
+
+  private func canForceConfigUpdate(lifecycleID: UInt64, now: Date) -> Bool {
+    return stateQueue.sync {
+      guard self.lifecycleID == lifecycleID, tunnelActive, coreRunning else { return false }
+      return now.timeIntervalSince(coreStartedAt) >= minCoreUptimeBeforePathRefresh
     }
   }
 
