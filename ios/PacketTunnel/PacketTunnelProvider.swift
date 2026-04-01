@@ -1,6 +1,7 @@
 import Foundation
 import NetworkExtension
 import Network
+import Darwin
 
 final class SocketProtectorAdapter: NSObject, MobileSocketProtectorProtocol {
   private weak var provider: NEPacketTunnelProvider?
@@ -43,14 +44,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let mihomoQueue = DispatchQueue(label: "com.accelerator.tg.mihomo.core", qos: .userInitiated)
   private let stateQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.state")
   private let debugLogQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.debug")
+  private var diagnosticsTimer: DispatchSourceTimer?
   private var lifecycleID: UInt64 = 0
   private var tunnelActive = false
   private var coreRunning = false
   private var coreStartedAt = Date.distantPast
   private var coreRecoveryAttempted = false
   private var debugLogURL: URL?
+  private var currentAppGroup: String
+  private let lastContextKey = "packet_tunnel_last_context"
+  private let lastContextTimeKey = "packet_tunnel_last_context_time"
 
   override init() {
+    currentAppGroup = defaultAppGroup
     super.init()
     let _ = NWPathMonitor()
   }
@@ -78,6 +84,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private func performStartTunnel(completionHandler: @escaping (Error?) -> Void) {
     let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
     let appGroup = providerConfig["appGroup"] as? String ?? defaultAppGroup
+    currentAppGroup = appGroup
     
     let configContent: String
     if let directConfig = providerConfig["vpn_config_content"] as? String, !directConfig.isEmpty {
@@ -123,7 +130,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     homeURL = groupURL
     prepareDebugLog(at: groupURL)
+    if let lastContext = consumeLastContext() {
+      appendDebugLog("previous_context=\(lastContext)")
+    }
     appendDebugLog("start requested appGroup=\(appGroup)")
+    updateLastContext("start requested appGroup=\(appGroup)")
+    appendDebugLog("runtime snapshot \(runtimeSnapshot())")
     let lifecycleID = beginTunnelLifecycle()
 
     let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: tunnelRemoteAddress)
@@ -154,15 +166,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       guard let self else { return }
       if let error {
         self.appendDebugLog("setTunnelNetworkSettings failed error=\(error.localizedDescription)")
+        self.updateLastContext("setTunnelNetworkSettings failed error=\(error.localizedDescription)")
         self.endTunnelLifecycle()
         self.finishStart(completionHandler, error: error)
         return
       }
 
       self.appendDebugLog("network settings applied dns=\(self.tunnelIPv4DNSAddress) mtu=\(self.tunnelMTU)")
+      self.updateLastContext("network settings applied")
 
       guard let tunFd = self.getTunnelFd() else {
         self.appendDebugLog("failed to get utun fd")
+        self.updateLastContext("failed to get utun fd")
         self.endTunnelLifecycle()
         self.finishStart(
           completionHandler,
@@ -175,6 +190,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return
       }
       self.appendDebugLog("utun fd acquired=\(tunFd)")
+      self.updateLastContext("utun fd acquired=\(tunFd)")
 
       let protector = SocketProtectorAdapter(provider: self)
       self.socketProtector = protector
@@ -220,16 +236,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
           self.markCoreRunning(lifecycleID: lifecycleID)
           self.appendDebugLog("core start loop begin lifecycle=\(lifecycleID)")
+          self.updateLastContext("core start loop begin lifecycle=\(lifecycleID)")
+          self.startDiagnosticsTimer(lifecycleID: lifecycleID)
           self.startPathMonitor(lifecycleID: lifecycleID)
           
           self.finishStart(completionHandler, error: nil)
 
           DispatchQueue.global(qos: .userInitiated).async {
+            self.updateLastContext("MobileStart begin lifecycle=\(lifecycleID)")
             self.runWithMihomoAutoreleasePool {
               MobileStart(groupURL.path, "config.yaml")
             }
             self.markCoreStopped(lifecycleID: lifecycleID)
             self.appendDebugLog("core exited lifecycle=\(lifecycleID)")
+            self.updateLastContext("core exited lifecycle=\(lifecycleID)")
             if self.isTunnelActive(lifecycleID: lifecycleID) {
               self.handleUnexpectedCoreExit(lifecycleID: lifecycleID, groupURL: groupURL)
             }
@@ -295,8 +315,11 @@ tun:
 
   override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
     appendDebugLog("stop tunnel reason=\(reason.rawValue)")
+    updateLastContext("stop tunnel reason=\(reason.rawValue)")
+    appendDebugLog("runtime snapshot \(runtimeSnapshot())")
     pathMonitor?.cancel()
     pathMonitor = nil
+    stopDiagnosticsTimer()
     hasObservedInitialPathUpdate = false
     lastPathFingerprint = nil
     lastPathRestartAt = Date.distantPast
@@ -304,8 +327,10 @@ tun:
     
     mihomoQueue.async {
       self.runWithMihomoAutoreleasePool {
+        self.updateLastContext("MobileStop begin")
         MobileStop()
         MobileClearSocketProtector()
+        self.updateLastContext("MobileStop finished")
         DispatchQueue.main.async {
           self.socketProtector = nil
           completionHandler()
@@ -316,75 +341,73 @@ tun:
 
   override func sleep(completionHandler: @escaping () -> Void) {
     appendDebugLog("sleep")
+    updateLastContext("sleep")
     completionHandler()
   }
 
   override func wake() {
     appendDebugLog("wake")
+    updateLastContext("wake")
   }
 
   override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
-    // Note: Do not dispatch to mihomoQueue here.
-    // Methods like MobileGetMode, MobileGetProxies, etc. are fast and thread-safe.
-    // Dispatching them to the serial mihomoQueue can cause deadlocks if MobileStartWithMemory is stuck
-    // or taking a long time to initialize.
-    
     guard self.isCoreRunning() else {
       completionHandler?(nil)
       return
     }
+    mihomoQueue.async {
+      self.runWithMihomoAutoreleasePool {
+        if let message = String(data: messageData, encoding: .utf8),
+           let response = self.handleLightweightAppMessage(message) {
+          completionHandler?(response)
+          return
+        }
 
-    self.runWithMihomoAutoreleasePool {
-      if let message = String(data: messageData, encoding: .utf8),
-         let response = self.handleLightweightAppMessage(message) {
-        completionHandler?(response)
-        return
+        guard
+          let object = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
+          let action = object["action"] as? String
+        else {
+          completionHandler?(nil)
+          return
+        }
+
+        var response: [String: Any] = ["ok": true]
+
+        switch action {
+        case "changeMode":
+          let mode = object["mode"] as? String ?? "rule"
+          MobileSetMode(mode)
+        case "getMode":
+          response["value"] = MobileGetMode()
+        case "getProxies":
+          response["value"] = MobileGetProxies()
+        case "getSelectedProxy":
+          let groupName = object["groupName"] as? String ?? "GLOBAL"
+          let proxiesJson = MobileGetProxies()
+          response["value"] = self.extractSelectedProxy(groupName: groupName, proxiesJson: proxiesJson) ?? ""
+        case "urlTest":
+          let name = object["name"] as? String ?? "GLOBAL"
+          response["value"] = MobileTestLatency(name)
+        case "selectProxy":
+          let groupName = object["groupName"] as? String ?? "GLOBAL"
+          let proxyName = object["proxyName"] as? String ?? ""
+          response["ok"] = MobileSelectProxy(groupName, proxyName)
+        case "reloadConfig":
+          MobileForceUpdateConfig("config.yaml")
+        case "getTraffic":
+          response["up"] = MobileTrafficUp()
+          response["down"] = MobileTrafficDown()
+          response["totalUp"] = MobileTrafficTotalUp()
+          response["totalDown"] = MobileTrafficTotalDown()
+        case "getDebugLog":
+          response["value"] = self.readDebugLog()
+        default:
+          response["ok"] = false
+        }
+
+        let data = try? JSONSerialization.data(withJSONObject: response)
+        completionHandler?(data)
       }
-
-      guard
-        let object = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
-        let action = object["action"] as? String
-      else {
-        completionHandler?(nil)
-        return
-      }
-
-      var response: [String: Any] = ["ok": true]
-
-      switch action {
-      case "changeMode":
-        let mode = object["mode"] as? String ?? "rule"
-        MobileSetMode(mode)
-      case "getMode":
-        response["value"] = MobileGetMode()
-      case "getProxies":
-        response["value"] = MobileGetProxies()
-      case "getSelectedProxy":
-        let groupName = object["groupName"] as? String ?? "GLOBAL"
-        let proxiesJson = MobileGetProxies()
-        response["value"] = self.extractSelectedProxy(groupName: groupName, proxiesJson: proxiesJson) ?? ""
-      case "urlTest":
-        let name = object["name"] as? String ?? "GLOBAL"
-        response["value"] = MobileTestLatency(name)
-      case "selectProxy":
-        let groupName = object["groupName"] as? String ?? "GLOBAL"
-        let proxyName = object["proxyName"] as? String ?? ""
-        response["ok"] = MobileSelectProxy(groupName, proxyName)
-      case "reloadConfig":
-        MobileForceUpdateConfig("config.yaml")
-      case "getTraffic":
-        response["up"] = MobileTrafficUp()
-        response["down"] = MobileTrafficDown()
-        response["totalUp"] = MobileTrafficTotalUp()
-        response["totalDown"] = MobileTrafficTotalDown()
-      case "getDebugLog":
-        response["value"] = self.readDebugLog()
-      default:
-        response["ok"] = false
-      }
-
-      let data = try? JSONSerialization.data(withJSONObject: response)
-      completionHandler?(data)
     }
   }
 
@@ -459,12 +482,13 @@ tun:
   private func appendDebugLog(_ message: String) {
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
     NSLog("%@", "[PacketTunnel] \(message)")
-    debugLogQueue.async {
+    debugLogQueue.sync {
       guard let debugLogURL = self.debugLogURL, let data = line.data(using: .utf8) else { return }
       if let fileHandle = try? FileHandle(forWritingTo: debugLogURL) {
         do {
           try fileHandle.seekToEnd()
           try fileHandle.write(contentsOf: data)
+          try fileHandle.synchronize()
           try fileHandle.close()
         } catch {
           try? fileHandle.close()
@@ -507,6 +531,7 @@ tun:
       }
       self.lastPathRestartAt = now
       self.appendDebugLog("path update observed, forcing config update to refresh network state")
+      self.updateLastContext("path update forcing config refresh")
       self.mihomoQueue.async {
         guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
         self.runWithMihomoAutoreleasePool {
@@ -529,14 +554,18 @@ tun:
   private func handleUnexpectedCoreExit(lifecycleID: UInt64, groupURL: URL) {
     if shouldAttemptCoreRecovery(lifecycleID: lifecycleID) {
       appendDebugLog("core exited unexpectedly, attempting one recovery start")
+      updateLastContext("core exited unexpectedly, attempting recovery")
       DispatchQueue.global(qos: .userInitiated).async {
+        self.updateLastContext("core recovery MobileStart begin lifecycle=\(lifecycleID)")
         self.runWithMihomoAutoreleasePool {
           MobileStart(groupURL.path, "config.yaml")
         }
         self.markCoreStopped(lifecycleID: lifecycleID)
         self.appendDebugLog("core recovery start exited lifecycle=\(lifecycleID)")
+        self.updateLastContext("core recovery start exited lifecycle=\(lifecycleID)")
         if self.isTunnelActive(lifecycleID: lifecycleID) {
           self.appendDebugLog("core recovery failed, cancel tunnel to recover system network")
+          self.updateLastContext("core recovery failed, cancel tunnel")
           self.cancelTunnelWithError(
             NSError(
               domain: "Tunnel",
@@ -549,6 +578,7 @@ tun:
       return
     }
     appendDebugLog("core exited unexpectedly, cancel tunnel to recover system network")
+    updateLastContext("core exited unexpectedly, cancel tunnel")
     self.cancelTunnelWithError(
       NSError(
         domain: "Tunnel",
@@ -574,6 +604,7 @@ tun:
       coreStartedAt = Date.distantPast
       coreRecoveryAttempted = false
       lastPathFingerprint = nil
+      updateLastContext("lifecycle begin id=\(lifecycleID)")
       return lifecycleID
     }
   }
@@ -586,6 +617,7 @@ tun:
       coreStartedAt = Date.distantPast
       coreRecoveryAttempted = false
       lastPathFingerprint = nil
+      updateLastContext("lifecycle end id=\(lifecycleID)")
     }
   }
 
@@ -630,5 +662,64 @@ tun:
     DispatchQueue.main.async {
       completionHandler(error)
     }
+  }
+
+  private func startDiagnosticsTimer(lifecycleID: UInt64) {
+    stopDiagnosticsTimer()
+    let timer = DispatchSource.makeTimerSource(queue: debugLogQueue)
+    timer.schedule(deadline: .now() + .seconds(5), repeating: .seconds(5))
+    timer.setEventHandler { [weak self] in
+      guard let self else { return }
+      guard self.isTunnelActive(lifecycleID: lifecycleID) else { return }
+      self.appendDebugLog("heartbeat lifecycle=\(lifecycleID) \(self.runtimeSnapshot())")
+      self.updateLastContext("heartbeat lifecycle=\(lifecycleID)")
+    }
+    diagnosticsTimer = timer
+    timer.resume()
+  }
+
+  private func stopDiagnosticsTimer() {
+    diagnosticsTimer?.cancel()
+    diagnosticsTimer = nil
+  }
+
+  private func runtimeSnapshot() -> String {
+    let residentBytes = residentMemoryBytes()
+    let residentMB = Double(residentBytes) / 1024.0 / 1024.0
+    let uptime = ProcessInfo.processInfo.systemUptime
+    return "resident_mb=\(String(format: "%.2f", residentMB)) uptime=\(String(format: "%.1f", uptime))"
+  }
+
+  private func residentMemoryBytes() -> UInt64 {
+    var info = mach_task_basic_info()
+    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let result: kern_return_t = withUnsafeMutablePointer(to: &info) { pointer in
+      pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPointer in
+        task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), intPointer, &count)
+      }
+    }
+    guard result == KERN_SUCCESS else { return 0 }
+    return UInt64(info.resident_size)
+  }
+
+  private func updateLastContext(_ value: String) {
+    guard let userDefaults = UserDefaults(suiteName: currentAppGroup) else { return }
+    userDefaults.set(value, forKey: lastContextKey)
+    userDefaults.set(ISO8601DateFormatter().string(from: Date()), forKey: lastContextTimeKey)
+    userDefaults.synchronize()
+  }
+
+  private func consumeLastContext() -> String? {
+    guard let userDefaults = UserDefaults(suiteName: currentAppGroup) else { return nil }
+    let value = userDefaults.string(forKey: lastContextKey)
+    let time = userDefaults.string(forKey: lastContextTimeKey)
+    userDefaults.removeObject(forKey: lastContextKey)
+    userDefaults.removeObject(forKey: lastContextTimeKey)
+    userDefaults.synchronize()
+    guard let value else { return nil }
+    if let time {
+      return "\(time) \(value)"
+    }
+    return value
   }
 }
