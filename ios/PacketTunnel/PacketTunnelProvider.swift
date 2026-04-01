@@ -113,10 +113,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     let appGroup = providerConfig["appGroup"] as? String ?? defaultAppGroup
     
     let configContent: String
-    if let userDefaults = UserDefaults(suiteName: appGroup),
+    let fileURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?.appendingPathComponent("vpn_config_content.txt")
+    if let url = fileURL, let savedConfig = try? String(contentsOf: url, encoding: .utf8) {
+      configContent = savedConfig
+      try? FileManager.default.removeItem(at: url)
+    } else if let userDefaults = UserDefaults(suiteName: appGroup),
        let savedConfig = userDefaults.string(forKey: "vpn_config_content") {
       configContent = savedConfig
-      // 配置读取后清空，不留冗余数据
       userDefaults.removeObject(forKey: "vpn_config_content")
       userDefaults.synchronize()
     } else {

@@ -210,6 +210,9 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           self.fileIOQueue.async {
               if let userDefaults = UserDefaults(suiteName: self.appGroupIdentifier) {
                   // 这里是将 Flutter 传过来的配置写入内存供 Extension 读取
+                  if let fileURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: self.appGroupIdentifier)?.appendingPathComponent("vpn_config_content.txt") {
+                      try? configContent.write(to: fileURL, atomically: true, encoding: .utf8)
+                  }
                   userDefaults.set(configContent, forKey: "vpn_config_content")
                   userDefaults.set(1, forKey: "vpn_config_status") // 1 = has config
                   userDefaults.synchronize()
