@@ -1,1 +1,1 @@
-#import "../Runner/ThirdParty/mihomo/libmihomo_bridge.h"
+#import "../Runner/ThirdParty/include/Mihomo.h"

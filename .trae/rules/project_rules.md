@@ -10,50 +10,26 @@
 - CI: `.github/workflows/ios-ipa.yml`
 - IPA 通过 CI 上传到 `tmpfiles.org`
 
-## iOS 当前排查结论
-
-- `ios/PacketTunnel/PacketTunnel-Bridging-Header.h` 与 `ios/Runner/Runner-Bridging-Header.h` 已直接引入 `ios/Runner/ThirdParty/mihomo/libmihomo.h`
-- `PacketTunnelProvider.swift` 已使用强类型 `Mobile*` 接口，`writePacket` 不再走 `perform(...).takeUnretainedValue()`
-- 当前 iOS 正确链路是：
-  - `PacketFlowBridge + packetFlow.readPackets/writePackets + MobileFeedPacketBytes + MobileMobileStartWithMemory(...)`
-- `mihomo-clash/ios/mihomo/listener/sing_tun/server_ios.go` 已确认 **不支持** `tun.file-descriptor`
-- 当前排查原则：**不要再回到 fd 路线**
-- 网络切换时，`sleep()` / `wake()` / `NWPathMonitor` 当前优先走 `MobileResetNetwork()`
-- `PacketTunnel.entitlements` 已补 `com.apple.security.network.client` 与 `com.apple.security.network.server`
-
-## iOS 已做修复
-
-- 启动接管修复：
-  - `Info.plist` 已移除 `UISceneStoryboardFile`、`UIMainStoryboardFile`
-  - `SceneDelegate.swift` 已继承 `FlutterSceneDelegate`
-  - `AppDelegate.swift` 改为在 `SceneDelegate` 创建 controller 后绑定 MethodChannel
-- 稳定性修复：
-  - `NETunnelProviderProtocol.disconnectOnSleep = false`
-  - iOS `start()` 前会显式 `requestVpnPermission()`
-  - `wake()` 在 `MobileWake()` 失败时会触发一次 `MobileRestartTunnelForNetworkChange()`
-  - `NWPathMonitor` 已增加首次回调忽略与重启节流
-- 参数收敛：
-  - TUN IPv4: `172.19.0.1/30`
-  - TUN IPv6: `fdfe:dcba:9876::1`
-  - MTU: `1400`
-  - 禁用 IPv6 默认路由
-  - iOS 系统 DNS 改到 TUN 内部地址 `172.19.0.2`
-  - 注入 `inet4-address: 172.19.0.1/30`
-- 运行时定位：
-  - `PacketTunnelProvider.swift` 已记录 `start / read / feed / write / path reset` 到 App Group 下 `packet_tunnel_debug.log`
-  - App 内已新增日志入口：右下角 debug overlay -> `Tunnel`
-  - Flutter 页面：`lib/views/ios_tunnel_debug_page.dart`
-- 当前真机结论：iOS 仍有“VPN 已连接但整机无网”；重点改为基于 Tunnel 日志判断卡在 `readPackets`、`MobileFeedPacketBytes` 还是 `writePackets`
-- 详细长记录见根目录 `修复进度记录.md`
-
-## iOS / mihomo 源码
-
-- 内核源码目录：`mihomo-clash/ios/mihomo`
-- iOS 静态库构建脚本：`mihomo-clash/ios/mihomo/.github/scripts/build-ios-static.sh`
-- `mobile.go` / `mobile_c_api.go` 已补 iOS 内存启动状态保持：`lastConfigBytes`
-- `applyIOSActiveConfig()` / `loadIOSConfigLocked()` 已抽出，复用 iOS 稳定化逻辑
-- Windows 环境已完成源码级修复与 `go test ./mobile`，但 **尚未** 真正重编新的 `libmihomo.a`
-- 若要替换静态库，需要在 macOS 执行构建脚本后覆盖到 `ios/Runner/ThirdParty/mihomo/`
+## iOS FD 重构与避坑指南 (已完成)
+- **FD 获取方案**：必须使用 WireGuard 标准的 `getsockopt` 遍历法 (0~1024 描述符，匹配 `utun`) 获取真实 TUN fd，绝对禁止使用 KVC `socket.fileDescriptor`。
+- **配置注入对齐 Android**：
+  在 `config.yaml` 注入 `tun` 块，必须包含：
+  ```yaml
+  tun:
+    enable: true
+    stack: gvisor
+    file-descriptor: <fd>
+    auto-route: false
+    auto-detect-interface: false
+    auto-redirect: false
+    mtu: 1500
+    dns-hijack:
+      - 0.0.0.0:53
+      - "[::]:53"
+  ```
+- **内存防杀与性能**：绝对禁止在扩展进程中调用原生的 `packetFlow.readPackets` 和 `writePackets`，一切读写交由 `gvisor` 内核直连，避免 CPU 飙升与超过 20MB 内存限制被系统强杀。
+- **网络切换与防断流**：当 `NWPathMonitor` 监听到网络变化（如 Wi-Fi/蜂窝切换）时，调用新版 API `MobileForceUpdateConfig("config.yaml")` 重载配置并刷新网络套接字，防止 VPN 彻底断开。
+- **内核库路径**：静态库和头文件已更新至 `Runner/ThirdParty/libmihomo.a` 和 `Runner/ThirdParty/include/Mihomo.h`。
 
 ## 热更新
 
@@ -84,14 +60,3 @@
 - `/app/v2/user/info` 返回 `code != 200` 时清理 `auth_token`、`user_info`
 - 随后弹不可取消提示并退出 App
 - 全局导航 key：`lib/core/constants.dart` 中的 `appNavigatorKey`
-
-## 校验与已知情况
-
-- `flutter test` 通过
-- `flutter analyze` 仍会被仓库内 `clashmi-main` 子目录历史错误拖红
-- Windows 若偶发 `INSTALL.vcxproj` 失败，先结束残留 `app.exe`
-- 若 GitHub Actions 报免费存储额度满，先清理账号下旧 artifacts
-
-## 其他
-
-- 性能优化总记录在 `优化清单.md`

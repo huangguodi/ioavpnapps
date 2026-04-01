@@ -2,48 +2,6 @@ import Foundation
 import NetworkExtension
 import Network
 
-final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
-  private let packetFlow: NEPacketTunnelFlow
-  private let onError: (String) -> Void
-  private let onPacketWritten: (Int32, Int) -> Void
-
-  init(
-    packetFlow: NEPacketTunnelFlow,
-    onError: @escaping (String) -> Void,
-    onPacketWritten: @escaping (Int32, Int) -> Void
-  ) {
-    self.packetFlow = packetFlow
-    self.onError = onError
-    self.onPacketWritten = onPacketWritten
-    super.init()
-  }
-
-  @objc(onPacketFlowError:)
-  func onPacketFlowError(_ message: String?) {
-    onError(message ?? "packet flow bridge error")
-  }
-
-  @objc(readPacket)
-  func readPacket() -> MobilePacketFlowPacket? {
-    return nil
-  }
-
-  @objc(writePacket:)
-  func write(_ packet: MobilePacketFlowPacket?) -> Bool {
-    guard let packet else { return false }
-    return autoreleasepool {
-      guard let rawData = packet.data() else { return false }
-      let af = Int32(packet.af())
-      if af != AF_INET && af != AF_INET6 {
-        return false
-      }
-      packetFlow.writePackets([rawData], withProtocols: [NSNumber(value: af)])
-      onPacketWritten(af, rawData.count)
-      return true
-    }
-  }
-}
-
 final class SocketProtectorAdapter: NSObject, MobileSocketProtector {
   private weak var provider: NEPacketTunnelProvider?
 
@@ -75,7 +33,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let ipv6PrefixLength = 126
   private let tunnelMTU = 1500
   private let pathRestartThrottle: TimeInterval = 2.0
-  private var bridge: PacketFlowBridgeAdapter?
   private var socketProtector: SocketProtectorAdapter?
   private var pathMonitor: NWPathMonitor?
   private var homeURL: URL?
@@ -88,15 +45,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private var tunnelActive = false
   private var coreRunning = false
   private var debugLogURL: URL?
-  private var totalReadPackets: UInt64 = 0
-  private var totalFedPackets: UInt64 = 0
-  private var totalFeedFailures: UInt64 = 0
-  private var totalWrittenPackets: UInt64 = 0
 
   override init() {
     super.init()
     let _ = NWPathMonitor()
-    MobileMihomoWarmup()
+  }
+
+  func getTunnelFd() -> Int32? {
+    var buf = [CChar](repeating: 0, count: Int(IFNAMSIZ))
+    for fd: Int32 in 0 ... 1024 {
+      var len = socklen_t(buf.count)
+      if getsockopt(fd, 2 /* SYSPROTO_CONTROL */, 2 /* UTUN_OPT_IFNAME */, &buf, &len) == 0 && String(cString: buf).hasPrefix("utun") {
+        return fd
+      }
+    }
+    return self.packetFlow.value(forKeyPath: "socket.fileDescriptor") as? Int32
   }
 
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -187,17 +150,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       }
 
       self.appendDebugLog("network settings applied dns=\(self.tunnelIPv4DNSAddress) mtu=\(self.tunnelMTU)")
-      let bridge = PacketFlowBridgeAdapter(
-        packetFlow: self.packetFlow,
-        onError: { message in
-          self.appendDebugLog("packet flow bridge error \(message)")
-          self.cancelTunnelWithError(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: message]))
-        },
-        onPacketWritten: { af, size in
-          self.recordWrittenPacket(af: af, size: size)
-        }
-      )
-      self.bridge = bridge
+
+      guard let tunFd = self.getTunnelFd() else {
+        self.appendDebugLog("failed to get utun fd")
+        self.endTunnelLifecycle()
+        self.finishStart(
+          completionHandler,
+          error: NSError(
+            domain: "Tunnel",
+            code: -4,
+            userInfo: [NSLocalizedDescriptionKey: "failed to get utun file descriptor"]
+          )
+        )
+        return
+      }
+      self.appendDebugLog("utun fd acquired=\(tunFd)")
 
       let protector = SocketProtectorAdapter(provider: self)
       self.socketProtector = protector
@@ -217,22 +184,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
           }
 
-          _ = MobileSetAppGroupDirectory(groupURL.path)
-          MobileSetPacketFlowBridge(bridge)
           MobileSetSocketProtector(protector)
-          self.appendDebugLog("packet flow bridge and socket protector installed")
+          self.appendDebugLog("socket protector installed")
 
-          let tunConfig = self.injectTunConfig(configContent)
+          let tunConfig = self.injectTunConfig(configContent, fd: tunFd)
           self.appendDebugLog("tun config injected \(tunConfig.replacingOccurrences(of: "\n", with: " | "))")
           let configURL = groupURL.appendingPathComponent("config.yaml", isDirectory: false)
           do {
             try tunConfig.write(to: configURL, atomically: true, encoding: .utf8)
           } catch {
-            MobileClearPacketFlowBridge()
             MobileClearSocketProtector()
             self.appendDebugLog("persist config failed error=\(error.localizedDescription)")
             self.endTunnelLifecycle()
-            self.bridge = nil
             self.socketProtector = nil
             self.finishStart(
               completionHandler,
@@ -244,36 +207,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             )
             return
           }
-          var startError: NSError?
-          let started = withExtendedLifetime(tunConfig) {
-            MobileMobileStartWithMemory(tunConfig, &startError)
-          }
-          guard started else {
-            MobileStop()
-            MobileClearPacketFlowBridge()
-            MobileClearSocketProtector()
-            self.appendDebugLog("core start failed error=\(startError?.localizedDescription ?? "unknown")")
-            self.endTunnelLifecycle()
-            self.bridge = nil
-            self.socketProtector = nil
-            self.finishStart(
-              completionHandler,
-              error: startError ?? NSError(
-                domain: "Tunnel",
-                code: -3,
-                userInfo: [NSLocalizedDescriptionKey: "MobileStartWithMemory returned false"]
-              )
-            )
-            return
-          }
 
+          MobileStart(groupURL.path, "config.yaml")
+
+          // MobileStart doesn't return an error in its signature, if it crashes it will crash the extension
           self.markCoreRunning(lifecycleID: lifecycleID)
           self.appendDebugLog("core started lifecycle=\(lifecycleID)")
           self.startPathMonitor(lifecycleID: lifecycleID)
-          
-          DispatchQueue.main.async {
-            self.startReadPacketsLoop(lifecycleID: lifecycleID)
-          }
           
           self.finishStart(completionHandler, error: nil)
         }
@@ -281,54 +221,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
   }
 
-  private func injectTunConfig(_ configContent: String) -> String {
+  private func injectTunConfig(_ configContent: String, fd: Int32) -> String {
     let injectedBlock = """
 tun:
   enable: true
   stack: gvisor
+  file-descriptor: \(fd)
   auto-route: false
   auto-detect-interface: false
   auto-redirect: false
-  strict-route: false
-  mtu: \(tunnelMTU)
-  inet4-address:
-    - \(ipv4Address)/\(ipv4PrefixLength)
+  mtu: 1500
   dns-hijack:
     - 0.0.0.0:53
-    - tcp://0.0.0.0:53
-  exclude-route:
-    - 127.0.0.0/8
-    - 10.0.0.0/8
-    - 172.16.0.0/12
-    - 192.168.0.0/16
-    - 224.0.0.0/4
-    - 255.255.255.255/32
-  ipv6: false
-dns:
-  default-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-  enable: true
-  enhanced-mode: redir-host
-  listen: 0.0.0.0:53
-  fallback:
-    - https://doh-pure.onedns.net/dns-query
-    - https://ada.openbld.net/dns-query
-    - https://223.5.5.5/dns-query
-    - https://223.6.6.6/dns-query
-  fallback-filter:
-    geoip: false
-    ipcidr:
-      - 240.0.0.0/4
-      - 0.0.0.0/32
-  ipv6: false
-  nameserver:
-    - https://doh.pub/dns-query
-    - https://dns.alidns.com/dns-query
-  proxy-server-nameserver:
-    - 223.5.5.5
-    - 119.29.29.29
-  use-hosts: true
+    - "[::]:53"
 """
     let lines = configContent.components(separatedBy: .newlines)
     var output: [String] = []
@@ -396,10 +301,8 @@ dns:
     mihomoQueue.async {
       self.runWithMihomoAutoreleasePool {
         MobileStop()
-        MobileClearPacketFlowBridge()
         MobileClearSocketProtector()
         DispatchQueue.main.async {
-          self.bridge = nil
           self.socketProtector = nil
           completionHandler()
         }
@@ -409,23 +312,11 @@ dns:
 
   override func sleep(completionHandler: @escaping () -> Void) {
     appendDebugLog("sleep")
-    mihomoQueue.async {
-      guard self.isCoreRunning() else { return }
-      self.runWithMihomoAutoreleasePool {
-        MobileResetNetwork()
-      }
-    }
     completionHandler()
   }
 
   override func wake() {
     appendDebugLog("wake")
-    mihomoQueue.async {
-      guard self.isCoreRunning() else { return }
-      self.runWithMihomoAutoreleasePool {
-        MobileResetNetwork()
-      }
-    }
   }
 
   override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)? = nil) {
@@ -549,10 +440,6 @@ dns:
   private func prepareDebugLog(at groupURL: URL) {
     debugLogQueue.sync {
       debugLogURL = groupURL.appendingPathComponent("packet_tunnel_debug.log", isDirectory: false)
-      totalReadPackets = 0
-      totalFedPackets = 0
-      totalFeedFailures = 0
-      totalWrittenPackets = 0
       if let debugLogURL {
         try? Data().write(to: debugLogURL, options: .atomic)
       }
@@ -587,91 +474,6 @@ dns:
     }
   }
 
-  private func recordWrittenPacket(af: Int32, size: Int) {
-    let result = debugLogQueue.sync { () -> (Bool, UInt64) in
-      totalWrittenPackets += 1
-      return (totalWrittenPackets <= 5 || totalWrittenPackets % 200 == 0, totalWrittenPackets)
-    }
-    if result.0 {
-      appendDebugLog("write packet count=\(result.1) af=\(af) size=\(size)")
-    }
-  }
-
-  private func startReadPacketsLoop(lifecycleID: UInt64) {
-    packetFlow.readPackets { [weak self] packets, protocols in
-      guard let self else { return }
-      guard self.isTunnelActive(lifecycleID: lifecycleID) else { return }
-      let count = min(packets.count, protocols.count)
-      if count > 0 {
-        var packetBatch: [(Data, Int64)] = []
-        packetBatch.reserveCapacity(count)
-        for i in 0..<count {
-          let packetData = packets[i]
-          let af = Int64(protocols[i].int32Value)
-          if packetData.isEmpty {
-            continue
-          }
-          if af != Int64(AF_INET) && af != Int64(AF_INET6) {
-            continue
-          }
-          packetBatch.append((packetData, af))
-        }
-
-        if !packetBatch.isEmpty {
-          let readCount = packetBatch.count
-          let readResult = self.debugLogQueue.sync { () -> (Bool, UInt64) in
-            self.totalReadPackets += UInt64(readCount)
-            return (self.totalReadPackets <= 5 || self.totalReadPackets % 200 == 0, self.totalReadPackets)
-          }
-          if readResult.0 {
-            self.appendDebugLog("read packets total=\(readResult.1) batch=\(readCount)")
-          }
-          
-          // CRITICAL FIX: Make a deep copy of the Data objects to avoid memory corruption
-          // because the NSData provided by NetworkExtension is only valid within this closure.
-          let copiedBatch = packetBatch.map { data, proto -> (Data, NSNumber) in
-            var copied = Data(capacity: data.count)
-            copied.append(data)
-            return (copied, proto)
-          }
-          
-          self.mihomoQueue.async { [weak self] in
-            guard let self else { return }
-            guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
-            self.runWithMihomoAutoreleasePool {
-              for (packetData, af) in copiedBatch {
-                let fed = MobileFeedPacketBytes(packetData, af)
-                let event = self.debugLogQueue.sync { () -> (Bool, UInt64, UInt64) in
-                  if fed {
-                    self.totalFedPackets += 1
-                    let shouldLog = self.totalFedPackets <= 5 || self.totalFedPackets % 200 == 0
-                    return (shouldLog, self.totalFedPackets, self.totalFeedFailures)
-                  } else {
-                    self.totalFeedFailures += 1
-                    let shouldLog = self.totalFeedFailures <= 10 || self.totalFeedFailures % 50 == 0
-                    return (shouldLog, self.totalFedPackets, self.totalFeedFailures)
-                  }
-                }
-                if event.0 {
-                  if fed {
-                    self.appendDebugLog("feed packet success total=\(event.1) af=\(af) size=\(packetData.count)")
-                  } else {
-                    self.appendDebugLog("feed packet failed failures=\(event.2) af=\(af) size=\(packetData.count)")
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      DispatchQueue.main.async { [weak self] in
-        guard let self else { return }
-        guard self.isTunnelActive(lifecycleID: lifecycleID) else { return }
-        self.startReadPacketsLoop(lifecycleID: lifecycleID)
-      }
-    }
-  }
-
   private func startPathMonitor(lifecycleID: UInt64) {
     let monitor = NWPathMonitor()
     monitor.pathUpdateHandler = { [weak self] _ in
@@ -686,11 +488,11 @@ dns:
         return
       }
       self.lastPathRestartAt = now
-      self.appendDebugLog("path update reset network")
+      self.appendDebugLog("path update observed, forcing config update to refresh network state")
       self.mihomoQueue.async {
         guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
         self.runWithMihomoAutoreleasePool {
-          MobileResetNetwork()
+          MobileForceUpdateConfig("config.yaml")
         }
       }
     }
