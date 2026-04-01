@@ -208,14 +208,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             return
           }
 
-          MobileStart(groupURL.path, "config.yaml")
-
           // MobileStart doesn't return an error in its signature, if it crashes it will crash the extension
           self.markCoreRunning(lifecycleID: lifecycleID)
           self.appendDebugLog("core started lifecycle=\(lifecycleID)")
           self.startPathMonitor(lifecycleID: lifecycleID)
           
           self.finishStart(completionHandler, error: nil)
+
+          DispatchQueue.global(qos: .userInitiated).async {
+            self.runWithMihomoAutoreleasePool {
+              MobileStart(groupURL.path, "config.yaml")
+            }
+            self.appendDebugLog("core exited lifecycle=\(lifecycleID)")
+          }
         }
       }
     }
