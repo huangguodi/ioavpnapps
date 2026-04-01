@@ -353,6 +353,10 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
           self.sendProviderCommand(["action": "reloadConfig"]) { resp in
             result((resp["ok"] as? Bool) ?? false)
           }
+      } else if call.method == "getTunnelDebugLog" {
+          self.sendProviderStringMessage("getDebugLog") { value in
+            result(value ?? "")
+          }
       } else {
           result(FlutterMethodNotImplemented)
       }

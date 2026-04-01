@@ -5,10 +5,16 @@ import Network
 final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
   private let packetFlow: NEPacketTunnelFlow
   private let onError: (String) -> Void
+  private let onPacketWritten: (Int32, Int) -> Void
 
-  init(packetFlow: NEPacketTunnelFlow, onError: @escaping (String) -> Void) {
+  init(
+    packetFlow: NEPacketTunnelFlow,
+    onError: @escaping (String) -> Void,
+    onPacketWritten: @escaping (Int32, Int) -> Void
+  ) {
     self.packetFlow = packetFlow
     self.onError = onError
+    self.onPacketWritten = onPacketWritten
     super.init()
   }
 
@@ -32,6 +38,7 @@ final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
         return false
       }
       packetFlow.writePackets([rawData], withProtocols: [NSNumber(value: af)])
+      onPacketWritten(af, rawData.count)
       return true
     }
   }
@@ -56,9 +63,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private var lastPathRestartAt = Date.distantPast
   private let mihomoQueue = DispatchQueue(label: "com.accelerator.tg.mihomo.core", qos: .userInitiated)
   private let stateQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.state")
+  private let debugLogQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.debug")
   private var lifecycleID: UInt64 = 0
   private var tunnelActive = false
   private var coreRunning = false
+  private var debugLogURL: URL?
+  private var totalReadPackets: UInt64 = 0
+  private var totalFedPackets: UInt64 = 0
+  private var totalFeedFailures: UInt64 = 0
+  private var totalWrittenPackets: UInt64 = 0
 
   override init() {
     super.init()
@@ -114,6 +127,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     homeURL = groupURL
+    prepareDebugLog(at: groupURL)
+    appendDebugLog("start requested appGroup=\(appGroup)")
     let lifecycleID = beginTunnelLifecycle()
 
     let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: tunnelRemoteAddress)
@@ -137,14 +152,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     setTunnelNetworkSettings(settings) { [weak self] error in
       guard let self else { return }
       if let error {
+        self.appendDebugLog("setTunnelNetworkSettings failed error=\(error.localizedDescription)")
         self.endTunnelLifecycle()
         self.finishStart(completionHandler, error: error)
         return
       }
 
-      let bridge = PacketFlowBridgeAdapter(packetFlow: self.packetFlow) { message in
-        self.cancelTunnelWithError(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: message]))
-      }
+      self.appendDebugLog("network settings applied dns=\(self.tunnelIPv4DNSAddress) mtu=\(self.tunnelMTU)")
+      let bridge = PacketFlowBridgeAdapter(
+        packetFlow: self.packetFlow,
+        onError: { message in
+          self.appendDebugLog("packet flow bridge error \(message)")
+          self.cancelTunnelWithError(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: message]))
+        },
+        onPacketWritten: { af, size in
+          self.recordWrittenPacket(af: af, size: size)
+        }
+      )
       self.bridge = bridge
       
       self.mihomoQueue.async {
@@ -163,16 +187,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
           _ = MobileSetAppGroupDirectory(groupURL.path)
           MobileSetPacketFlowBridge(bridge)
+          self.appendDebugLog("packet flow bridge installed")
           DispatchQueue.main.async {
             self.startReadPacketsLoop(lifecycleID: lifecycleID)
           }
 
           let tunConfig = self.injectTunConfig(configContent)
+          self.appendDebugLog("tun config injected \(tunConfig.replacingOccurrences(of: "\n", with: " | "))")
           let configURL = groupURL.appendingPathComponent("config.yaml", isDirectory: false)
           do {
             try tunConfig.write(to: configURL, atomically: true, encoding: .utf8)
           } catch {
             MobileClearPacketFlowBridge()
+            self.appendDebugLog("persist config failed error=\(error.localizedDescription)")
             self.endTunnelLifecycle()
             self.bridge = nil
             self.finishStart(
@@ -192,6 +219,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
           guard started else {
             MobileStop()
             MobileClearPacketFlowBridge()
+            self.appendDebugLog("core start failed error=\(startError?.localizedDescription ?? "unknown")")
             self.endTunnelLifecycle()
             self.bridge = nil
             self.finishStart(
@@ -206,6 +234,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
           }
 
           self.markCoreRunning(lifecycleID: lifecycleID)
+          self.appendDebugLog("core started lifecycle=\(lifecycleID)")
           self.startPathMonitor(lifecycleID: lifecycleID)
           self.finishStart(completionHandler, error: nil)
         }
@@ -260,6 +289,7 @@ tun:
   }
 
   override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+    appendDebugLog("stop tunnel reason=\(reason.rawValue)")
     pathMonitor?.cancel()
     pathMonitor = nil
     hasObservedInitialPathUpdate = false
@@ -279,6 +309,7 @@ tun:
   }
 
   override func sleep(completionHandler: @escaping () -> Void) {
+    appendDebugLog("sleep")
     mihomoQueue.async {
       guard self.isCoreRunning() else { return }
       self.runWithMihomoAutoreleasePool {
@@ -289,6 +320,7 @@ tun:
   }
 
   override func wake() {
+    appendDebugLog("wake")
     mihomoQueue.async {
       guard self.isCoreRunning() else { return }
       self.runWithMihomoAutoreleasePool {
@@ -348,6 +380,8 @@ tun:
           response["down"] = MobileTrafficDown()
           response["totalUp"] = MobileTrafficTotalUp()
           response["totalDown"] = MobileTrafficTotalDown()
+        case "getDebugLog":
+          response["value"] = self.readDebugLog()
         default:
           response["ok"] = false
         }
@@ -380,6 +414,9 @@ tun:
         return "shared_mem".data(using: .utf8)
       }
       return proxiesJson.data(using: .utf8)
+    }
+    if message == "getDebugLog" {
+      return readDebugLog().data(using: .utf8)
     }
     if message.hasPrefix("getSelectedProxy|") {
       let groupName = String(message.dropFirst("getSelectedProxy|".count))
@@ -426,6 +463,57 @@ tun:
     return group["now"] as? String
   }
 
+  private func prepareDebugLog(at groupURL: URL) {
+    debugLogQueue.sync {
+      debugLogURL = groupURL.appendingPathComponent("packet_tunnel_debug.log", isDirectory: false)
+      totalReadPackets = 0
+      totalFedPackets = 0
+      totalFeedFailures = 0
+      totalWrittenPackets = 0
+      if let debugLogURL {
+        try? Data().write(to: debugLogURL, options: .atomic)
+      }
+    }
+  }
+
+  private func appendDebugLog(_ message: String) {
+    let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
+    NSLog("%@", "[PacketTunnel] \(message)")
+    debugLogQueue.async {
+      guard let debugLogURL = self.debugLogURL, let data = line.data(using: .utf8) else { return }
+      if let fileHandle = try? FileHandle(forWritingTo: debugLogURL) {
+        do {
+          try fileHandle.seekToEnd()
+          try fileHandle.write(contentsOf: data)
+          try fileHandle.close()
+        } catch {
+          try? fileHandle.close()
+        }
+      } else {
+        try? data.write(to: debugLogURL, options: .atomic)
+      }
+    }
+  }
+
+  private func readDebugLog() -> String {
+    return debugLogQueue.sync {
+      guard let debugLogURL, let content = try? String(contentsOf: debugLogURL, encoding: .utf8) else {
+        return ""
+      }
+      return content
+    }
+  }
+
+  private func recordWrittenPacket(af: Int32, size: Int) {
+    let result = debugLogQueue.sync { () -> (Bool, UInt64) in
+      totalWrittenPackets += 1
+      return (totalWrittenPackets <= 5 || totalWrittenPackets % 200 == 0, totalWrittenPackets)
+    }
+    if result.0 {
+      appendDebugLog("write packet count=\(result.1) af=\(af) size=\(size)")
+    }
+  }
+
   private func startReadPacketsLoop(lifecycleID: UInt64) {
     packetFlow.readPackets { [weak self] packets, protocols in
       guard let self else { return }
@@ -447,12 +535,38 @@ tun:
         }
 
         if !packetBatch.isEmpty {
+          let readCount = packetBatch.count
+          let readResult = self.debugLogQueue.sync { () -> (Bool, UInt64) in
+            self.totalReadPackets += UInt64(readCount)
+            return (self.totalReadPackets <= 5 || self.totalReadPackets % 200 == 0, self.totalReadPackets)
+          }
+          if readResult.0 {
+            self.appendDebugLog("read packets total=\(readResult.1) batch=\(readCount)")
+          }
           self.mihomoQueue.async { [weak self] in
             guard let self else { return }
             guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
             self.runWithMihomoAutoreleasePool {
               for (packetData, af) in packetBatch {
-                _ = MobileFeedPacketBytes(packetData, af)
+                let fed = MobileFeedPacketBytes(packetData, af)
+                let event = self.debugLogQueue.sync { () -> (Bool, UInt64, UInt64) in
+                  if fed {
+                    self.totalFedPackets += 1
+                    let shouldLog = self.totalFedPackets <= 5 || self.totalFedPackets % 200 == 0
+                    return (shouldLog, self.totalFedPackets, self.totalFeedFailures)
+                  } else {
+                    self.totalFeedFailures += 1
+                    let shouldLog = self.totalFeedFailures <= 10 || self.totalFeedFailures % 50 == 0
+                    return (shouldLog, self.totalFedPackets, self.totalFeedFailures)
+                  }
+                }
+                if event.0 {
+                  if fed {
+                    self.appendDebugLog("feed packet success total=\(event.1) af=\(af) size=\(packetData.count)")
+                  } else {
+                    self.appendDebugLog("feed packet failed failures=\(event.2) af=\(af) size=\(packetData.count)")
+                  }
+                }
               }
             }
           }
@@ -480,6 +594,7 @@ tun:
         return
       }
       self.lastPathRestartAt = now
+      self.appendDebugLog("path update reset network")
       self.mihomoQueue.async {
         guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
         self.runWithMihomoAutoreleasePool {
