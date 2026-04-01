@@ -766,7 +766,7 @@ tun:
   private func shouldForceConfigRefreshForPathUpdate(
     lifecycleID: UInt64,
     fingerprint: String,
-    pathStatus: NWPath.Status,
+    pathStatus: Network.NWPath.Status,
     now: Date
   ) -> Bool {
     return syncOnStateQueue {
