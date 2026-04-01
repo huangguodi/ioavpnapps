@@ -2,7 +2,7 @@ import Foundation
 import NetworkExtension
 import Network
 
-final class SocketProtectorAdapter: NSObject, MobileSocketProtector {
+final class SocketProtectorAdapter: NSObject, MobileSocketProtectorProtocol {
   private weak var provider: NEPacketTunnelProvider?
 
   init(provider: NEPacketTunnelProvider) {
