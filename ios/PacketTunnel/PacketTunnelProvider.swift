@@ -174,6 +174,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       
       self.mihomoQueue.async {
         self.runWithMihomoAutoreleasePool {
+          MobileSetLogLevel("debug")
           guard self.isTunnelActive(lifecycleID: lifecycleID) else {
             self.finishStart(
               completionHandler,
