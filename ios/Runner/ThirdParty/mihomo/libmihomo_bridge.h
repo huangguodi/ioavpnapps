@@ -38,6 +38,7 @@ FOUNDATION_EXPORT void MobileResetNetwork(void);
 FOUNDATION_EXPORT BOOL MobileRestartTunnelForNetworkChange(void);
 FOUNDATION_EXPORT BOOL MobileSelectProxy(NSString* _Nullable groupName, NSString* _Nullable proxyName);
 FOUNDATION_EXPORT BOOL MobileSetAppGroupDirectory(NSString* _Nullable dir);
+FOUNDATION_EXPORT void MobileSetLogLevel(NSString* _Nullable level);
 FOUNDATION_EXPORT void MobileSetMode(NSString* _Nullable mode);
 FOUNDATION_EXPORT void MobileSetPacketFlowBridge(id<MobilePacketFlowBridge> _Nullable bridge);
 FOUNDATION_EXPORT void MobileSetSocketProtector(id<MobileSocketProtector> _Nullable protector);
