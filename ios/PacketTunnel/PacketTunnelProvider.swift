@@ -113,17 +113,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     let appGroup = providerConfig["appGroup"] as? String ?? defaultAppGroup
     
     let configContent: String
-    let fileURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?.appendingPathComponent("vpn_config_content.txt")
-    if let url = fileURL, let savedConfig = try? String(contentsOf: url, encoding: .utf8) {
-      configContent = savedConfig
-      try? FileManager.default.removeItem(at: url)
-    } else if let userDefaults = UserDefaults(suiteName: appGroup),
-       let savedConfig = userDefaults.string(forKey: "vpn_config_content") {
-      configContent = savedConfig
-      userDefaults.removeObject(forKey: "vpn_config_content")
-      userDefaults.synchronize()
+    if let directConfig = providerConfig["vpn_config_content"] as? String, !directConfig.isEmpty {
+      configContent = directConfig
     } else {
-      configContent = ""
+      let fileURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)?.appendingPathComponent("vpn_config_content.txt")
+      if let url = fileURL, let savedConfig = try? String(contentsOf: url, encoding: .utf8) {
+        configContent = savedConfig
+        try? FileManager.default.removeItem(at: url)
+      } else if let userDefaults = UserDefaults(suiteName: appGroup),
+         let savedConfig = userDefaults.string(forKey: "vpn_config_content") {
+        configContent = savedConfig
+        userDefaults.removeObject(forKey: "vpn_config_content")
+        userDefaults.synchronize()
+      } else {
+        configContent = ""
+      }
     }
 
     if configContent.isEmpty {
@@ -282,10 +286,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 tun:
   enable: true
   stack: gvisor
-  auto-route: true
-  auto-detect-interface: true
+  auto-route: false
+  auto-detect-interface: false
   auto-redirect: false
-  strict-route: true
+  strict-route: false
   mtu: \(tunnelMTU)
   inet4-address:
     - \(ipv4Address)/\(ipv4PrefixLength)
@@ -625,7 +629,11 @@ dns:
           
           // CRITICAL FIX: Make a deep copy of the Data objects to avoid memory corruption
           // because the NSData provided by NetworkExtension is only valid within this closure.
-          let copiedBatch = packetBatch.map { (Data($0.0), $0.1) }
+          let copiedBatch = packetBatch.map { data, proto -> (Data, NSNumber) in
+            var copied = Data(capacity: data.count)
+            copied.append(data)
+            return (copied, proto)
+          }
           
           self.mihomoQueue.async { [weak self] in
             guard let self else { return }

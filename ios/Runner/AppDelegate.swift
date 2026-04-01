@@ -506,7 +506,8 @@ final class TunnelTrafficStreamHandler: NSObject, FlutterStreamHandler {
       proto.serverAddress = "Accelerator"
       proto.disconnectOnSleep = false
       proto.providerConfiguration = [
-        "appGroup": self.appGroupIdentifier
+        "appGroup": self.appGroupIdentifier,
+        "vpn_config_content": configContent
       ]
       
       manager.localizedDescription = self.tunnelDescription
