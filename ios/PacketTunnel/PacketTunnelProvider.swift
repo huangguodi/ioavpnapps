@@ -518,7 +518,7 @@ tun:
     pathMonitor = monitor
   }
 
-  private func pathFingerprint(_ path: NWPath) -> String {
+  private func pathFingerprint(_ path: Network.NWPath) -> String {
     let statuses = path.availableInterfaces
       .map { "\($0.type.rawValue)-\($0.name)" }
       .sorted()
