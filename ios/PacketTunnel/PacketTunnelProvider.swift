@@ -75,6 +75,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
   override init() {
     super.init()
+    let _ = NWPathMonitor()
     MobileMihomoWarmup()
   }
 
