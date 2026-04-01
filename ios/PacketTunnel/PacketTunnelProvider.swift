@@ -5,7 +5,6 @@ import Network
 final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
   private let packetFlow: NEPacketTunnelFlow
   private let onError: (String) -> Void
-  private let lockQueue = DispatchQueue(label: "com.accelerator.tg.packetflow.bridge")
 
   init(packetFlow: NEPacketTunnelFlow, onError: @escaping (String) -> Void) {
     self.packetFlow = packetFlow
@@ -38,21 +37,6 @@ final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
   }
 }
 
-final class SocketProtectorAdapter: NSObject, MobileSocketProtector {
-  // Currently unused since NEPacketTunnelProvider doesn't provide a mark socket API for file descriptors directly
-  // But we provide the implementation for the libmihomo hook.
-  
-  @objc(markSocket:network:address:)
-  func markSocket(_ fd: Int64, network: String?, address: String?) -> Bool {
-    return true
-  }
-  
-  @objc(protectSocket:network:address:)
-  func protectSocket(_ fd: Int64, network: String?, address: String?) -> Bool {
-    return true
-  }
-}
-
 final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let defaultAppGroup = "group.com.xiangyu.clash"
   private let tunnelRemoteAddress = "127.0.0.1"
@@ -65,7 +49,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let dnsServers = ["1.1.1.1", "8.8.8.8"]
   private let pathRestartThrottle: TimeInterval = 2.0
   private var bridge: PacketFlowBridgeAdapter?
-  private var socketProtector: SocketProtectorAdapter?
   private var pathMonitor: NWPathMonitor?
   private var homeURL: URL?
   private var hasObservedInitialPathUpdate = false
@@ -147,6 +130,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     settings.mtu = NSNumber(value: tunnelMTU)
     let dns = NEDNSSettings(servers: dnsServers)
     dns.matchDomains = [""]
+    dns.matchDomainsNoSearch = true
     settings.dnsSettings = dns
 
     setTunnelNetworkSettings(settings) { [weak self] error in
@@ -161,9 +145,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         self.cancelTunnelWithError(NSError(domain: "Tunnel", code: -4, userInfo: [NSLocalizedDescriptionKey: message]))
       }
       self.bridge = bridge
-      
-      let protector = SocketProtectorAdapter()
-      self.socketProtector = protector
       
       self.mihomoQueue.async {
         self.runWithMihomoAutoreleasePool {
@@ -181,7 +162,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
           _ = MobileSetAppGroupDirectory(groupURL.path)
           MobileSetPacketFlowBridge(bridge)
-          MobileSetSocketProtector(protector)
           DispatchQueue.main.async {
             self.startReadPacketsLoop(lifecycleID: lifecycleID)
           }
@@ -192,10 +172,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             try tunConfig.write(to: configURL, atomically: true, encoding: .utf8)
           } catch {
             MobileClearPacketFlowBridge()
-            MobileClearSocketProtector()
             self.endTunnelLifecycle()
             self.bridge = nil
-            self.socketProtector = nil
             self.finishStart(
               completionHandler,
               error: NSError(
@@ -213,10 +191,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
           guard started else {
             MobileStop()
             MobileClearPacketFlowBridge()
-            MobileClearSocketProtector()
             self.endTunnelLifecycle()
             self.bridge = nil
-            self.socketProtector = nil
             self.finishStart(
               completionHandler,
               error: startError ?? NSError(
@@ -291,10 +267,8 @@ tun:
       self.runWithMihomoAutoreleasePool {
         MobileStop()
         MobileClearPacketFlowBridge()
-        MobileClearSocketProtector()
         DispatchQueue.main.async {
           self.bridge = nil
-          self.socketProtector = nil
           completionHandler()
         }
       }
