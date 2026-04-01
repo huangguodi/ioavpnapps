@@ -59,7 +59,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return fd
       }
     }
-    return self.packetFlow.value(forKeyPath: "socket.fileDescriptor") as? Int32
+    return nil
   }
 
   override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
@@ -239,33 +239,16 @@ tun:
     var output: [String] = []
     var index = 0
     var replacedTun = false
-    var skipDns = false
 
     while index < lines.count {
       let line = lines[index]
       let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
       
       let isTopLevelTunLine = !line.hasPrefix(" ") && !line.hasPrefix("\t") && trimmedLine.hasPrefix("tun:")
-      let isTopLevelDnsLine = !line.hasPrefix(" ") && !line.hasPrefix("\t") && trimmedLine.hasPrefix("dns:")
 
       if !replacedTun && isTopLevelTunLine {
         output.append(contentsOf: injectedBlock.components(separatedBy: .newlines))
         replacedTun = true
-        index += 1
-        while index < lines.count {
-          let next = lines[index]
-          if !next.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-              !next.hasPrefix(" ") &&
-              !next.hasPrefix("\t") {
-            break
-          }
-          index += 1
-        }
-        continue
-      }
-      
-      if isTopLevelDnsLine {
-        skipDns = true
         index += 1
         while index < lines.count {
           let next = lines[index]
@@ -400,12 +383,18 @@ tun:
     }
     if message == "getProxies" {
       let proxiesJson = MobileGetProxies()
+      // 当配置过大时（如超过几百KB），UserDefaults 存取可能影响性能或失败
+      // 所以我们除了写 UserDefaults，也建议使用文件传递，但保持向后兼容
       if let userDefaults = UserDefaults(suiteName: defaultAppGroup) {
         userDefaults.set(proxiesJson, forKey: "vpn_proxies_data")
         userDefaults.synchronize()
-        return "shared_mem".data(using: .utf8)
       }
-      return proxiesJson.data(using: .utf8)
+      if let groupURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: defaultAppGroup) {
+        let fileURL = groupURL.appendingPathComponent("vpn_proxies_data.json")
+        try? proxiesJson.write(to: fileURL, atomically: true, encoding: .utf8)
+        return "file://\(fileURL.path)".data(using: .utf8)
+      }
+      return "shared_mem".data(using: .utf8)
     }
     if message == "getDebugLog" {
       return readDebugLog().data(using: .utf8)
