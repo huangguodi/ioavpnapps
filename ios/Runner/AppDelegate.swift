@@ -875,10 +875,17 @@ final class TunnelStatusStreamHandler: NSObject, FlutterStreamHandler {
   }
 
   private func stopTunnel(completion: @escaping () -> Void) {
-    loadTunnelManager { manager, _ in
-      (manager?.connection as? NETunnelProviderSession)?.stopVPNTunnel()
-      self.emitCurrentTunnelStatus(forceRefresh: true)
-      completion()
+    loadTunnelManager(forceRefresh: true) { manager, _ in
+      guard let manager else {
+        self.emitCurrentTunnelStatus(forceRefresh: true)
+        completion()
+        return
+      }
+      (manager.connection as? NETunnelProviderSession)?.stopVPNTunnel()
+      self.waitTunnelStopped(manager: manager, retries: 24) { _ in
+        self.emitCurrentTunnelStatus(forceRefresh: true)
+        completion()
+      }
     }
   }
 

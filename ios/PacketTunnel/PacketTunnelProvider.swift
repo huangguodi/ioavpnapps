@@ -37,13 +37,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let minCoreUptimeBeforePathRefresh: TimeInterval = 15.0
   private var socketProtector: SocketProtectorAdapter?
   private var pathMonitor: NWPathMonitor?
-  private var homeURL: URL?
   private var hasObservedInitialPathUpdate = false
   private var lastPathFingerprint: String?
   private var lastPathRestartAt = Date.distantPast
   private let mihomoQueue = DispatchQueue(label: "com.accelerator.tg.mihomo.core", qos: .userInitiated)
   private let stateQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.state")
+  private let stateQueueKey = DispatchSpecificKey<Void>()
   private let debugLogQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.debug")
+  private let debugLogQueueKey = DispatchSpecificKey<Void>()
   private var diagnosticsTimer: DispatchSourceTimer?
   private var lifecycleID: UInt64 = 0
   private var tunnelActive = false
@@ -58,6 +59,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   override init() {
     currentAppGroup = defaultAppGroup
     super.init()
+    stateQueue.setSpecific(key: stateQueueKey, value: ())
+    debugLogQueue.setSpecific(key: debugLogQueueKey, value: ())
     let _ = NWPathMonitor()
   }
 
@@ -84,7 +87,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private func performStartTunnel(completionHandler: @escaping (Error?) -> Void) {
     let providerConfig = (protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration ?? [:]
     let appGroup = providerConfig["appGroup"] as? String ?? defaultAppGroup
-    currentAppGroup = appGroup
+    setCurrentAppGroup(appGroup)
     
     let configContent: String
     if let directConfig = providerConfig["vpn_config_content"] as? String, !directConfig.isEmpty {
@@ -128,7 +131,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       return
     }
 
-    homeURL = groupURL
     prepareDebugLog(at: groupURL)
     if let lastContext = consumeLastContext() {
       appendDebugLog("previous_context=\(lastContext)")
@@ -317,12 +319,8 @@ tun:
     appendDebugLog("stop tunnel reason=\(reason.rawValue)")
     updateLastContext("stop tunnel reason=\(reason.rawValue)")
     appendDebugLog("runtime snapshot \(runtimeSnapshot())")
-    pathMonitor?.cancel()
-    pathMonitor = nil
+    cancelPathMonitor()
     stopDiagnosticsTimer()
-    hasObservedInitialPathUpdate = false
-    lastPathFingerprint = nil
-    lastPathRestartAt = Date.distantPast
     endTunnelLifecycle()
     
     mihomoQueue.async {
@@ -357,6 +355,10 @@ tun:
     }
     mihomoQueue.async {
       self.runWithMihomoAutoreleasePool {
+        guard self.isCoreRunning() else {
+          completionHandler?(nil)
+          return
+        }
         if let message = String(data: messageData, encoding: .utf8),
            let response = self.handleLightweightAppMessage(message) {
           completionHandler?(response)
@@ -471,7 +473,7 @@ tun:
   }
 
   private func prepareDebugLog(at groupURL: URL) {
-    debugLogQueue.sync {
+    syncOnDebugLogQueue {
       debugLogURL = groupURL.appendingPathComponent("packet_tunnel_debug.log", isDirectory: false)
       if let debugLogURL {
         try? Data().write(to: debugLogURL, options: .atomic)
@@ -482,7 +484,7 @@ tun:
   private func appendDebugLog(_ message: String) {
     let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
     NSLog("%@", "[PacketTunnel] \(message)")
-    debugLogQueue.sync {
+    syncOnDebugLogQueue {
       guard let debugLogURL = self.debugLogURL, let data = line.data(using: .utf8) else { return }
       if let fileHandle = try? FileHandle(forWritingTo: debugLogURL) {
         do {
@@ -500,7 +502,7 @@ tun:
   }
 
   private func readDebugLog() -> String {
-    return debugLogQueue.sync {
+    return syncOnDebugLogQueue {
       guard let debugLogURL, let content = try? String(contentsOf: debugLogURL, encoding: .utf8) else {
         return ""
       }
@@ -508,28 +510,32 @@ tun:
     }
   }
 
+  private func syncOnDebugLogQueue<T>(_ work: () -> T) -> T {
+    if DispatchQueue.getSpecific(key: debugLogQueueKey) != nil {
+      return work()
+    }
+    return debugLogQueue.sync(execute: work)
+  }
+
+  private func syncOnStateQueue<T>(_ work: () -> T) -> T {
+    if DispatchQueue.getSpecific(key: stateQueueKey) != nil {
+      return work()
+    }
+    return stateQueue.sync(execute: work)
+  }
+
   private func startPathMonitor(lifecycleID: UInt64) {
     let monitor = NWPathMonitor()
     monitor.pathUpdateHandler = { [weak self] path in
       guard let self else { return }
-      guard self.isTunnelActive(lifecycleID: lifecycleID) else { return }
       let fingerprint = self.pathFingerprint(path)
-      if !self.hasObservedInitialPathUpdate {
-        self.hasObservedInitialPathUpdate = true
-        self.lastPathFingerprint = fingerprint
-        return
-      }
-      if fingerprint == self.lastPathFingerprint {
-        return
-      }
-      self.lastPathFingerprint = fingerprint
-      guard path.status == .satisfied else { return }
       let now = Date()
-      guard self.canForceConfigUpdate(lifecycleID: lifecycleID, now: now) else { return }
-      if now.timeIntervalSince(self.lastPathRestartAt) < self.pathRestartThrottle {
-        return
-      }
-      self.lastPathRestartAt = now
+      guard self.shouldForceConfigRefreshForPathUpdate(
+        lifecycleID: lifecycleID,
+        fingerprint: fingerprint,
+        pathStatus: path.status,
+        now: now
+      ) else { return }
       self.appendDebugLog("path update observed, forcing config update to refresh network state")
       self.updateLastContext("path update forcing config refresh")
       self.mihomoQueue.async {
@@ -539,8 +545,9 @@ tun:
         }
       }
     }
+    let previousMonitor = replacePathMonitor(with: monitor)
+    previousMonitor?.cancel()
     monitor.start(queue: DispatchQueue(label: "com.accelerator.tg.packettunnel.path"))
-    pathMonitor = monitor
   }
 
   private func pathFingerprint(_ path: Network.NWPath) -> String {
@@ -589,7 +596,7 @@ tun:
   }
 
   private func shouldAttemptCoreRecovery(lifecycleID: UInt64) -> Bool {
-    return stateQueue.sync {
+    return syncOnStateQueue {
       guard self.lifecycleID == lifecycleID, tunnelActive, !coreRecoveryAttempted else { return false }
       coreRecoveryAttempted = true
       return true
@@ -597,32 +604,36 @@ tun:
   }
 
   private func beginTunnelLifecycle() -> UInt64 {
-    return stateQueue.sync {
+    return syncOnStateQueue {
       lifecycleID += 1
       tunnelActive = true
       coreRunning = false
       coreStartedAt = Date.distantPast
       coreRecoveryAttempted = false
+      hasObservedInitialPathUpdate = false
       lastPathFingerprint = nil
+      lastPathRestartAt = Date.distantPast
       updateLastContext("lifecycle begin id=\(lifecycleID)")
       return lifecycleID
     }
   }
 
   private func endTunnelLifecycle() {
-    stateQueue.sync {
+    syncOnStateQueue {
       lifecycleID += 1
       tunnelActive = false
       coreRunning = false
       coreStartedAt = Date.distantPast
       coreRecoveryAttempted = false
+      hasObservedInitialPathUpdate = false
       lastPathFingerprint = nil
+      lastPathRestartAt = Date.distantPast
       updateLastContext("lifecycle end id=\(lifecycleID)")
     }
   }
 
   private func markCoreRunning(lifecycleID: UInt64) {
-    stateQueue.sync {
+    syncOnStateQueue {
       guard self.lifecycleID == lifecycleID, tunnelActive else { return }
       coreRunning = true
       coreStartedAt = Date()
@@ -630,7 +641,7 @@ tun:
   }
 
   private func markCoreStopped(lifecycleID: UInt64) {
-    stateQueue.sync {
+    syncOnStateQueue {
       guard self.lifecycleID == lifecycleID else { return }
       coreRunning = false
       coreStartedAt = Date.distantPast
@@ -638,23 +649,16 @@ tun:
   }
 
   private func isTunnelActive(lifecycleID: UInt64) -> Bool {
-    return stateQueue.sync {
+    return syncOnStateQueue {
       self.lifecycleID == lifecycleID && tunnelActive
     }
   }
 
   private func isCoreRunning(lifecycleID: UInt64? = nil) -> Bool {
-    return stateQueue.sync {
+    return syncOnStateQueue {
       guard coreRunning else { return false }
       guard let lifecycleID else { return tunnelActive }
       return self.lifecycleID == lifecycleID && tunnelActive
-    }
-  }
-
-  private func canForceConfigUpdate(lifecycleID: UInt64, now: Date) -> Bool {
-    return stateQueue.sync {
-      guard self.lifecycleID == lifecycleID, tunnelActive, coreRunning else { return false }
-      return now.timeIntervalSince(coreStartedAt) >= minCoreUptimeBeforePathRefresh
     }
   }
 
@@ -674,13 +678,19 @@ tun:
       self.appendDebugLog("heartbeat lifecycle=\(lifecycleID) \(self.runtimeSnapshot())")
       self.updateLastContext("heartbeat lifecycle=\(lifecycleID)")
     }
-    diagnosticsTimer = timer
+    syncOnDebugLogQueue {
+      diagnosticsTimer = timer
+    }
     timer.resume()
   }
 
   private func stopDiagnosticsTimer() {
-    diagnosticsTimer?.cancel()
-    diagnosticsTimer = nil
+    let timer = syncOnDebugLogQueue { () -> DispatchSourceTimer? in
+      let existingTimer = diagnosticsTimer
+      diagnosticsTimer = nil
+      return existingTimer
+    }
+    timer?.cancel()
   }
 
   private func runtimeSnapshot() -> String {
@@ -703,14 +713,14 @@ tun:
   }
 
   private func updateLastContext(_ value: String) {
-    guard let userDefaults = UserDefaults(suiteName: currentAppGroup) else { return }
+    guard let userDefaults = UserDefaults(suiteName: currentAppGroupValue()) else { return }
     userDefaults.set(value, forKey: lastContextKey)
     userDefaults.set(ISO8601DateFormatter().string(from: Date()), forKey: lastContextTimeKey)
     userDefaults.synchronize()
   }
 
   private func consumeLastContext() -> String? {
-    guard let userDefaults = UserDefaults(suiteName: currentAppGroup) else { return nil }
+    guard let userDefaults = UserDefaults(suiteName: currentAppGroupValue()) else { return nil }
     let value = userDefaults.string(forKey: lastContextKey)
     let time = userDefaults.string(forKey: lastContextTimeKey)
     userDefaults.removeObject(forKey: lastContextKey)
@@ -721,5 +731,60 @@ tun:
       return "\(time) \(value)"
     }
     return value
+  }
+
+  private func setCurrentAppGroup(_ appGroup: String) {
+    syncOnStateQueue {
+      currentAppGroup = appGroup
+    }
+  }
+
+  private func currentAppGroupValue() -> String {
+    return syncOnStateQueue {
+      currentAppGroup
+    }
+  }
+
+  private func replacePathMonitor(with monitor: NWPathMonitor?) -> NWPathMonitor? {
+    return syncOnStateQueue {
+      let previousMonitor = pathMonitor
+      pathMonitor = monitor
+      return previousMonitor
+    }
+  }
+
+  private func cancelPathMonitor() {
+    let monitor = replacePathMonitor(with: nil)
+    monitor?.cancel()
+    syncOnStateQueue {
+      hasObservedInitialPathUpdate = false
+      lastPathFingerprint = nil
+      lastPathRestartAt = Date.distantPast
+    }
+  }
+
+  private func shouldForceConfigRefreshForPathUpdate(
+    lifecycleID: UInt64,
+    fingerprint: String,
+    pathStatus: NWPath.Status,
+    now: Date
+  ) -> Bool {
+    return syncOnStateQueue {
+      guard self.lifecycleID == lifecycleID, tunnelActive else { return false }
+      if !hasObservedInitialPathUpdate {
+        hasObservedInitialPathUpdate = true
+        lastPathFingerprint = fingerprint
+        return false
+      }
+      if fingerprint == lastPathFingerprint {
+        return false
+      }
+      lastPathFingerprint = fingerprint
+      guard pathStatus == .satisfied, coreRunning else { return false }
+      guard now.timeIntervalSince(coreStartedAt) >= minCoreUptimeBeforePathRefresh else { return false }
+      guard now.timeIntervalSince(lastPathRestartAt) >= pathRestartThrottle else { return false }
+      lastPathRestartAt = now
+      return true
+    }
   }
 }
