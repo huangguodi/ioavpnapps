@@ -249,14 +249,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 tun:
   enable: true
   stack: gvisor
-  auto-route: false
-  auto-detect-interface: false
-  auto-redirect: false
+  auto-route: true
+  auto-detect-interface: true
+  auto-redirect: true
   mtu: \(tunnelMTU)
   inet4-address:
     - \(ipv4Address)/\(ipv4PrefixLength)
   dns-hijack:
     - 0.0.0.0:53
+  exclude-route:
+    - 172.19.0.0/30
+    - 127.0.0.0/8
 """
     let lines = configContent.components(separatedBy: .newlines)
     var output: [String] = []
