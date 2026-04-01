@@ -520,10 +520,10 @@ tun:
 
   private func pathFingerprint(_ path: Network.NWPath) -> String {
     let statuses = path.availableInterfaces
-      .map { "\($0.type.rawValue)-\($0.name)" }
+      .map { "\(String(describing: $0.type))-\($0.name)" }
       .sorted()
       .joined(separator: ",")
-    return "\(path.status.rawValue)|\(path.isExpensive ? 1 : 0)|\(path.isConstrained ? 1 : 0)|\(statuses)"
+    return "\(String(describing: path.status))|\(path.isExpensive ? 1 : 0)|\(path.isConstrained ? 1 : 0)|\(statuses)"
   }
 
   private func handleUnexpectedCoreExit(lifecycleID: UInt64, groupURL: URL) {
