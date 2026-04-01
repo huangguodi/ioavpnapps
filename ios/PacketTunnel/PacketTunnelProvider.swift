@@ -255,11 +255,13 @@ tun:
   mtu: \(tunnelMTU)
   inet4-address:
     - \(ipv4Address)/\(ipv4PrefixLength)
-  dns-hijack:
-    - 0.0.0.0:53
+  dns-hijack: []
   exclude-route:
     - 172.19.0.0/30
     - 127.0.0.0/8
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
 """
     let lines = configContent.components(separatedBy: .newlines)
     var output: [String] = []
