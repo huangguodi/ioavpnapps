@@ -41,12 +41,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let defaultAppGroup = "group.com.xiangyu.clash"
   private let tunnelRemoteAddress = "127.0.0.1"
   private let ipv4Address = "172.19.0.1"
+  private let ipv4PrefixLength = 30
   private let ipv4SubnetMask = "255.255.255.252"
+  private let tunnelIPv4DNSAddress = "172.19.0.2"
   private let enableIPv6Route = false
   private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
   private let tunnelMTU = 1400
-  private let dnsServers = ["1.1.1.1", "8.8.8.8"]
   private let pathRestartThrottle: TimeInterval = 2.0
   private var bridge: PacketFlowBridgeAdapter?
   private var pathMonitor: NWPathMonitor?
@@ -128,7 +129,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       settings.ipv6Settings = ipv6Settings
     }
     settings.mtu = NSNumber(value: tunnelMTU)
-    let dns = NEDNSSettings(servers: dnsServers)
+    let dns = NEDNSSettings(servers: [tunnelIPv4DNSAddress])
     dns.matchDomains = [""]
     dns.matchDomainsNoSearch = true
     settings.dnsSettings = dns
@@ -221,6 +222,8 @@ tun:
   auto-detect-interface: false
   auto-redirect: false
   mtu: \(tunnelMTU)
+  inet4-address:
+    - \(ipv4Address)/\(ipv4PrefixLength)
   dns-hijack:
     - 0.0.0.0:53
 """
