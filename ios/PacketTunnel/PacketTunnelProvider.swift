@@ -44,6 +44,25 @@ final class PacketFlowBridgeAdapter: NSObject, MobilePacketFlowBridge {
   }
 }
 
+final class SocketProtectorAdapter: NSObject, MobileSocketProtector {
+  private weak var provider: NEPacketTunnelProvider?
+
+  init(provider: NEPacketTunnelProvider) {
+    self.provider = provider
+    super.init()
+  }
+
+  @objc(markSocket:network:address:)
+  func markSocket(_ fd: Int64, network: String?, address: String?) -> Bool {
+    return true
+  }
+
+  @objc(protectSocket:network:address:)
+  func protectSocket(_ fd: Int64, network: String?, address: String?) -> Bool {
+    return true
+  }
+}
+
 final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let defaultAppGroup = "group.com.xiangyu.clash"
   private let tunnelRemoteAddress = "127.0.0.1"
@@ -57,6 +76,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let tunnelMTU = 1400
   private let pathRestartThrottle: TimeInterval = 2.0
   private var bridge: PacketFlowBridgeAdapter?
+  private var socketProtector: SocketProtectorAdapter?
   private var pathMonitor: NWPathMonitor?
   private var homeURL: URL?
   private var hasObservedInitialPathUpdate = false
@@ -171,6 +191,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
       )
       self.bridge = bridge
+
+      let protector = SocketProtectorAdapter(provider: self)
+      self.socketProtector = protector
       
       self.mihomoQueue.async {
         self.runWithMihomoAutoreleasePool {
@@ -189,10 +212,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
           _ = MobileSetAppGroupDirectory(groupURL.path)
           MobileSetPacketFlowBridge(bridge)
-          self.appendDebugLog("packet flow bridge installed")
-          DispatchQueue.main.async {
-            self.startReadPacketsLoop(lifecycleID: lifecycleID)
-          }
+          MobileSetSocketProtector(protector)
+          self.appendDebugLog("packet flow bridge and socket protector installed")
 
           let tunConfig = self.injectTunConfig(configContent)
           self.appendDebugLog("tun config injected \(tunConfig.replacingOccurrences(of: "\n", with: " | "))")
@@ -201,9 +222,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             try tunConfig.write(to: configURL, atomically: true, encoding: .utf8)
           } catch {
             MobileClearPacketFlowBridge()
+            MobileClearSocketProtector()
             self.appendDebugLog("persist config failed error=\(error.localizedDescription)")
             self.endTunnelLifecycle()
             self.bridge = nil
+            self.socketProtector = nil
             self.finishStart(
               completionHandler,
               error: NSError(
@@ -221,9 +244,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
           guard started else {
             MobileStop()
             MobileClearPacketFlowBridge()
+            MobileClearSocketProtector()
             self.appendDebugLog("core start failed error=\(startError?.localizedDescription ?? "unknown")")
             self.endTunnelLifecycle()
             self.bridge = nil
+            self.socketProtector = nil
             self.finishStart(
               completionHandler,
               error: startError ?? NSError(
@@ -238,6 +263,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
           self.markCoreRunning(lifecycleID: lifecycleID)
           self.appendDebugLog("core started lifecycle=\(lifecycleID)")
           self.startPathMonitor(lifecycleID: lifecycleID)
+          
+          DispatchQueue.main.async {
+            self.startReadPacketsLoop(lifecycleID: lifecycleID)
+          }
+          
           self.finishStart(completionHandler, error: nil)
         }
       }
@@ -247,7 +277,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private func injectTunConfig(_ configContent: String) -> String {
     let tunBlock = """
 tun:
-  enable: false
+  enable: true
   stack: gvisor
   auto-route: true
   auto-detect-interface: true
@@ -255,9 +285,10 @@ tun:
   mtu: \(tunnelMTU)
   inet4-address:
     - \(ipv4Address)/\(ipv4PrefixLength)
-  dns-hijack: []
+  dns-hijack:
+    - any:53
+    - tcp://any:53
   exclude-route:
-    - 172.19.0.0/30
     - 127.0.0.0/8
     - 10.0.0.0/8
     - 172.16.0.0/12
@@ -307,8 +338,10 @@ tun:
       self.runWithMihomoAutoreleasePool {
         MobileStop()
         MobileClearPacketFlowBridge()
+        MobileClearSocketProtector()
         DispatchQueue.main.async {
           self.bridge = nil
+          self.socketProtector = nil
           completionHandler()
         }
       }
@@ -534,11 +567,16 @@ tun:
           if readResult.0 {
             self.appendDebugLog("read packets total=\(readResult.1) batch=\(readCount)")
           }
+          
+          // CRITICAL FIX: Make a deep copy of the Data objects to avoid memory corruption
+          // because the NSData provided by NetworkExtension is only valid within this closure.
+          let copiedBatch = packetBatch.map { (Data($0.0), $0.1) }
+          
           self.mihomoQueue.async { [weak self] in
             guard let self else { return }
             guard self.isCoreRunning(lifecycleID: lifecycleID) else { return }
             self.runWithMihomoAutoreleasePool {
-              for (packetData, af) in packetBatch {
+              for (packetData, af) in copiedBatch {
                 let fed = MobileFeedPacketBytes(packetData, af)
                 let event = self.debugLogQueue.sync { () -> (Bool, UInt64, UInt64) in
                   if fed {
