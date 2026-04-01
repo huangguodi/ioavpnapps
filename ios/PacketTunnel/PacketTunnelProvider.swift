@@ -24,10 +24,10 @@ final class SocketProtectorAdapter: NSObject, MobileSocketProtectorProtocol {
 final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let defaultAppGroup = "group.com.xiangyu.clash"
   private let tunnelRemoteAddress = "127.0.0.1"
-  private let ipv4Address = "172.19.0.1"
-  private let ipv4PrefixLength = 30
-  private let ipv4SubnetMask = "255.255.255.252"
-  private let tunnelIPv4DNSAddress = "172.19.0.2"
+  private let ipv4Address = "198.18.0.1"
+  private let ipv4PrefixLength = 16
+  private let ipv4SubnetMask = "255.255.0.0"
+  private let tunnelIPv4DNSAddress = "198.18.0.2"
   private let enableIPv6Route = false
   private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
@@ -124,6 +124,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: tunnelRemoteAddress)
     let ipv4Settings = NEIPv4Settings(addresses: [ipv4Address], subnetMasks: [ipv4SubnetMask])
+    // CRITICAL: Must include a default route to direct all traffic into the TUN interface
+    // when Clash's auto-route is disabled.
     ipv4Settings.includedRoutes = [NEIPv4Route.default()]
     settings.ipv4Settings = ipv4Settings
     if enableIPv6Route {
@@ -139,6 +141,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     dns.matchDomains = [""]
     dns.matchDomainsNoSearch = true
     settings.dnsSettings = dns
+
+    // iOS 15+ bug workaround: NetworkExtension might not route traffic to the tunnel
+    // unless auto-route is enabled, OR we explicitly set the default route in settings.
+    // The issue here is that iOS needs to know what traffic to send to the TUN interface.
 
     setTunnelNetworkSettings(settings) { [weak self] error in
       guard let self else { return }
@@ -232,8 +238,8 @@ tun:
   enable: true
   stack: gvisor
   file-descriptor: \(fd)
-  auto-route: true
-  auto-detect-interface: true
+  auto-route: false
+  auto-detect-interface: false
   auto-redirect: false
   mtu: 1500
   dns-hijack:
