@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:app/core/logger.dart';
+import 'package:app/views/ios_tunnel_debug_page.dart';
 import 'package:app/views/widgets/custom_dialog.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -106,7 +109,7 @@ class _DebugOverlayButtonState extends State<DebugOverlayButton> {
                 padding: const EdgeInsets.all(12),
                 child: ValueListenableBuilder<int>(
                   valueListenable: AppLogger.changes,
-                  builder: (context, _, __) {
+                  builder: (context, _, child) {
                     final logs = AppLogger.dumpLogs();
                     return SingleChildScrollView(
                       reverse: true,
@@ -125,6 +128,24 @@ class _DebugOverlayButtonState extends State<DebugOverlayButton> {
             ),
           ),
           actions: [
+            if (Platform.isIOS)
+              TextButton(
+                onPressed: () async {
+                  Navigator.of(alertContext).pop();
+                  await Navigator.of(dialogContext).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const IosTunnelDebugPage(),
+                    ),
+                  );
+                },
+                child: const Text(
+                  'Tunnel',
+                  style: TextStyle(
+                    color: Color(0xFF96CBFF),
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
             TextButton(
               onPressed: () async {
                 final logs = AppLogger.dumpLogs();

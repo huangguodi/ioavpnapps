@@ -673,6 +673,19 @@ class MihomoService {
     }
   }
 
+  Future<String> getTunnelDebugLog() async {
+    if (!Platform.isIOS) {
+      return '当前仅支持 iOS';
+    }
+    try {
+      final String? result = await _channel.invokeMethod('getTunnelDebugLog');
+      return result ?? '';
+    } catch (e) {
+      AppLogger.e("MihomoService: getTunnelDebugLog error: $e");
+      return '读取 Tunnel 日志失败：$e';
+    }
+  }
+
   Future<bool> switchMode(String mode) async {
     try {
       await _channel.invokeMethod('changeMode', {'mode': mode});
