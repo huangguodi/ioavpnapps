@@ -232,8 +232,8 @@ tun:
   enable: true
   stack: gvisor
   file-descriptor: \(fd)
-  auto-route: false
-  auto-detect-interface: false
+  auto-route: true
+  auto-detect-interface: true
   auto-redirect: false
   mtu: 1500
   dns-hijack:
