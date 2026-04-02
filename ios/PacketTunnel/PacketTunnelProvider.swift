@@ -13,12 +13,14 @@ final class SocketProtectorAdapter: NSObject, MobileSocketProtectorProtocol {
 
   @objc(markSocket:network:address:)
   func markSocket(_ fd: Int64, network: String?, address: String?) -> Bool {
-    return true
+    guard let packetTunnelProvider = provider as? PacketTunnelProvider else { return true }
+    return packetTunnelProvider.protectSocket(fd: Int32(fd), network: network, address: address)
   }
 
   @objc(protectSocket:network:address:)
   func protectSocket(_ fd: Int64, network: String?, address: String?) -> Bool {
-    return true
+    guard let packetTunnelProvider = provider as? PacketTunnelProvider else { return true }
+    return packetTunnelProvider.protectSocket(fd: Int32(fd), network: network, address: address)
   }
 }
 
@@ -34,12 +36,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let ipv6PrefixLength = 126
   private let tunnelMTU = 1500
   private let pathRestartThrottle: TimeInterval = 2.0
-  private let minCoreUptimeBeforePathRefresh: TimeInterval = 15.0
+  private let minCoreUptimeBeforePathRefresh: TimeInterval = 2.0
   private var socketProtector: SocketProtectorAdapter?
   private var pathMonitor: NWPathMonitor?
   private var hasObservedInitialPathUpdate = false
   private var lastPathFingerprint: String?
   private var lastPathRestartAt = Date.distantPast
+  private var lastObservedInterfaceName: String?
   private let mihomoQueue = DispatchQueue(label: "com.accelerator.tg.mihomo.core", qos: .userInitiated)
   private let stateQueue = DispatchQueue(label: "com.accelerator.tg.packettunnel.state")
   private let stateQueueKey = DispatchSpecificKey<Void>()
@@ -319,9 +322,6 @@ tun:
   auto-detect-interface: false
   auto-redirect: false
   mtu: \(tunnelMTU)
-  dns-hijack:
-    - 0.0.0.0:53
-    - "[::]:53"
 """
     let lines = configContent.components(separatedBy: .newlines)
     var output: [String] = []
@@ -574,6 +574,7 @@ tun:
     let monitor = NWPathMonitor()
     monitor.pathUpdateHandler = { [weak self] path in
       guard let self else { return }
+      self.updateLastObservedInterfaceName(self.preferredInterfaceName(from: path))
       let fingerprint = self.pathFingerprint(path)
       let now = Date()
       guard self.shouldForceConfigRefreshForPathUpdate(
@@ -659,6 +660,7 @@ tun:
       hasObservedInitialPathUpdate = false
       lastPathFingerprint = nil
       lastPathRestartAt = Date.distantPast
+      lastObservedInterfaceName = nil
       updateLastContext("lifecycle begin id=\(lifecycleID)")
       return lifecycleID
     }
@@ -674,6 +676,7 @@ tun:
       hasObservedInitialPathUpdate = false
       lastPathFingerprint = nil
       lastPathRestartAt = Date.distantPast
+      lastObservedInterfaceName = nil
       updateLastContext("lifecycle end id=\(lifecycleID)")
     }
   }
@@ -806,6 +809,7 @@ tun:
       hasObservedInitialPathUpdate = false
       lastPathFingerprint = nil
       lastPathRestartAt = Date.distantPast
+      lastObservedInterfaceName = nil
     }
   }
 
@@ -819,8 +823,12 @@ tun:
       guard self.lifecycleID == lifecycleID, tunnelActive else { return false }
       if !hasObservedInitialPathUpdate {
         hasObservedInitialPathUpdate = true
+        guard pathStatus == .satisfied, coreRunning else { return false }
+        guard now.timeIntervalSince(coreStartedAt) >= minCoreUptimeBeforePathRefresh else { return false }
+        guard now.timeIntervalSince(lastPathRestartAt) >= pathRestartThrottle else { return false }
         lastPathFingerprint = fingerprint
-        return false
+        lastPathRestartAt = now
+        return true
       }
       if fingerprint == lastPathFingerprint {
         return false
@@ -831,6 +839,74 @@ tun:
       guard now.timeIntervalSince(lastPathRestartAt) >= pathRestartThrottle else { return false }
       lastPathRestartAt = now
       return true
+    }
+  }
+
+  fileprivate func protectSocket(fd: Int32, network: String?, address: String?) -> Bool {
+    let interfaceName = normalizedInterfaceName(network) ?? currentObservedInterfaceName()
+    guard let interfaceName else { return true }
+    let interfaceIndex = if_nametoindex(interfaceName)
+    if interfaceIndex == 0 { return true }
+    var boundIndex = Int32(interfaceIndex)
+    let size = socklen_t(MemoryLayout<Int32>.size)
+    let ipv4Result = setsockopt(fd, IPPROTO_IP, IP_BOUND_IF, &boundIndex, size)
+    let ipv4Errno = errno
+    let ipv6Result = setsockopt(fd, IPPROTO_IPV6, IPV6_BOUND_IF, &boundIndex, size)
+    let ipv6Errno = errno
+    if ipv4Result == 0 || ipv6Result == 0 { return true }
+    if isNonFatalSocketBindError(ipv4Errno) || isNonFatalSocketBindError(ipv6Errno) { return true }
+    appendDebugLog("socket protect failed fd=\(fd) network=\(network ?? "nil") address=\(address ?? "nil") if=\(interfaceName) err4=\(ipv4Errno) err6=\(ipv6Errno)")
+    return false
+  }
+
+  private func isNonFatalSocketBindError(_ code: Int32) -> Bool {
+    switch code {
+    case EINVAL, EAFNOSUPPORT, ENOPROTOOPT, EPROTONOSUPPORT, ENOTSUP:
+      return true
+    default:
+      return false
+    }
+  }
+
+  private func normalizedInterfaceName(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, !trimmed.hasPrefix("utun") else { return nil }
+    return trimmed
+  }
+
+  private func preferredInterfaceName(from path: Network.NWPath) -> String? {
+    let interfaces = path.availableInterfaces.filter { !$0.name.hasPrefix("utun") }
+    let preferred = interfaces.sorted { lhs, rhs in
+      interfacePriority(lhs.type) > interfacePriority(rhs.type)
+    }
+    return preferred.first?.name
+  }
+
+  private func interfacePriority(_ type: Network.NWInterface.InterfaceType) -> Int {
+    switch type {
+    case .wifi:
+      return 4
+    case .wiredEthernet:
+      return 3
+    case .cellular:
+      return 2
+    case .loopback:
+      return 1
+    default:
+      return 0
+    }
+  }
+
+  private func updateLastObservedInterfaceName(_ value: String?) {
+    syncOnStateQueue {
+      lastObservedInterfaceName = value
+    }
+  }
+
+  private func currentObservedInterfaceName() -> String? {
+    return syncOnStateQueue {
+      lastObservedInterfaceName
     }
   }
 
