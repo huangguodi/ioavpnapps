@@ -28,7 +28,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let ipv4Address = "198.18.0.1"
   private let ipv4PrefixLength = 16
   private let ipv4SubnetMask = "255.255.0.0"
-  private let tunnelIPv4DNSAddress = "198.18.0.2"
+  private let tunnelDNSServers = ["223.5.5.5", "119.29.29.29"]
   private let enableIPv6Route = false
   private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
@@ -155,7 +155,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
       settings.ipv6Settings = ipv6Settings
     }
     settings.mtu = NSNumber(value: tunnelMTU)
-    let dns = NEDNSSettings(servers: [tunnelIPv4DNSAddress])
+    let dns = NEDNSSettings(servers: tunnelDNSServers)
     dns.matchDomains = [""]
     dns.matchDomainsNoSearch = true
     settings.dnsSettings = dns
@@ -174,7 +174,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return
       }
 
-      self.appendDebugLog("network settings applied dns=\(self.tunnelIPv4DNSAddress) mtu=\(self.tunnelMTU)")
+      self.appendDebugLog("network settings applied dns=\(self.tunnelDNSServers.joined(separator: ",")) mtu=\(self.tunnelMTU)")
       self.updateLastContext("network settings applied")
 
       guard let tunFd = self.getTunnelFd() else {
