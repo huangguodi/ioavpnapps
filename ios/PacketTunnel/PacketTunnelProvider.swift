@@ -33,6 +33,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
   private let tunnelMTU = 1500
+  private let mixedProxyPort = 7890
   private let pathRestartThrottle: TimeInterval = 2.0
   private let minCoreUptimeBeforePathRefresh: TimeInterval = 15.0
   private var socketProtector: SocketProtectorAdapter?
@@ -241,8 +242,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
           self.updateLastContext("core start loop begin lifecycle=\(lifecycleID)")
           self.startDiagnosticsTimer(lifecycleID: lifecycleID)
           self.startPathMonitor(lifecycleID: lifecycleID)
-          
-          self.finishStart(completionHandler, error: nil)
 
           DispatchQueue.global(qos: .userInitiated).async {
             self.updateLastContext("MobileStart begin lifecycle=\(lifecycleID)")
@@ -256,6 +255,54 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               self.handleUnexpectedCoreExit(lifecycleID: lifecycleID, groupURL: groupURL)
             }
           }
+
+          guard self.waitForCoreWarmup(lifecycleID: lifecycleID, timeout: 3.0) else {
+            self.appendDebugLog("core warmup failed, cancel start to avoid network blackhole")
+            self.updateLastContext("core warmup failed")
+            self.stopDiagnosticsTimer()
+            self.cancelPathMonitor()
+            self.endTunnelLifecycle()
+            MobileStop()
+            MobileClearSocketProtector()
+            self.socketProtector = nil
+            self.finishStart(
+              completionHandler,
+              error: NSError(
+                domain: "Tunnel",
+                code: -9,
+                userInfo: [NSLocalizedDescriptionKey: "mihomo core warmup failed"]
+              )
+            )
+            return
+          }
+
+          let connectivityProbe = self.waitForStartupConnectivity(
+            lifecycleID: lifecycleID,
+            timeout: 4.0
+          )
+          guard connectivityProbe.ok else {
+            self.appendDebugLog("startup connectivity probe failed detail=\(connectivityProbe.detail)")
+            self.updateLastContext("startup connectivity probe failed")
+            self.stopDiagnosticsTimer()
+            self.cancelPathMonitor()
+            self.endTunnelLifecycle()
+            MobileStop()
+            MobileClearSocketProtector()
+            self.socketProtector = nil
+            self.finishStart(
+              completionHandler,
+              error: NSError(
+                domain: "Tunnel",
+                code: -10,
+                userInfo: [NSLocalizedDescriptionKey: "startup connectivity probe failed: \(connectivityProbe.detail)"]
+              )
+            )
+            return
+          }
+
+          self.appendDebugLog("startup connectivity probe passed detail=\(connectivityProbe.detail)")
+          self.updateLastContext("startup connectivity probe passed")
+          self.finishStart(completionHandler, error: nil)
         }
       }
     }
@@ -265,7 +312,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     let injectedBlock = """
 tun:
   enable: true
-  stack: gvisor
+  stack: system
   file-descriptor: \(fd)
   inet4-address:
     - \(ipv4Address)/\(ipv4PrefixLength)
@@ -308,10 +355,35 @@ tun:
       index += 1
     }
     
+    let tunInjectedConfig: String
     if !replacedTun {
-      return configContent.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + injectedBlock + "\n"
+      tunInjectedConfig = configContent.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + injectedBlock + "\n"
+    } else {
+      tunInjectedConfig = output.joined(separator: "\n")
     }
-    
+    return ensureMixedProxyPort(tunInjectedConfig)
+  }
+
+  private func ensureMixedProxyPort(_ configContent: String) -> String {
+    let lines = configContent.components(separatedBy: .newlines)
+    var output: [String] = []
+    var replaced = false
+
+    for line in lines {
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      let isTopLevelMixedPort = !line.hasPrefix(" ") && !line.hasPrefix("\t") && trimmed.hasPrefix("mixed-port:")
+      if !replaced && isTopLevelMixedPort {
+        output.append("mixed-port: \(mixedProxyPort)")
+        replaced = true
+      } else {
+        output.append(line)
+      }
+    }
+
+    if !replaced {
+      let suffix = output.last?.isEmpty == true ? "" : "\n"
+      return output.joined(separator: "\n") + "\(suffix)mixed-port: \(mixedProxyPort)\n"
+    }
     return output.joined(separator: "\n")
   }
 
@@ -786,5 +858,86 @@ tun:
       lastPathRestartAt = now
       return true
     }
+  }
+
+  private func waitForCoreWarmup(lifecycleID: UInt64, timeout: TimeInterval) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      if !isTunnelActive(lifecycleID: lifecycleID) {
+        return false
+      }
+      if !isCoreRunning(lifecycleID: lifecycleID) {
+        return false
+      }
+      Thread.sleep(forTimeInterval: 0.1)
+    }
+    return isTunnelActive(lifecycleID: lifecycleID) && isCoreRunning(lifecycleID: lifecycleID)
+  }
+
+  private func waitForStartupConnectivity(
+    lifecycleID: UInt64,
+    timeout: TimeInterval
+  ) -> (ok: Bool, detail: String) {
+    let urls = [
+      "https://www.apple.com/library/test/success.html",
+      "https://cp.cloudflare.com/generate_204"
+    ]
+    let deadline = Date().addingTimeInterval(timeout)
+    var lastDetail = "no probe attempts"
+
+    while Date() < deadline {
+      if !isTunnelActive(lifecycleID: lifecycleID) || !isCoreRunning(lifecycleID: lifecycleID) {
+        return (false, "core stopped during startup probe")
+      }
+      for rawURL in urls {
+        guard let url = URL(string: rawURL) else { continue }
+        let remaining = deadline.timeIntervalSinceNow
+        if remaining <= 0 { break }
+        let singleTimeout = min(1.5, max(0.5, remaining))
+        let probe = probeStartupURL(url, timeout: singleTimeout)
+        if probe.ok {
+          return (true, probe.detail)
+        }
+        lastDetail = probe.detail
+      }
+      Thread.sleep(forTimeInterval: 0.2)
+    }
+    return (false, lastDetail)
+  }
+
+  private func probeStartupURL(_ url: URL, timeout: TimeInterval) -> (ok: Bool, detail: String) {
+    let semaphore = DispatchSemaphore(value: 0)
+    var result: (ok: Bool, detail: String) = (false, "unknown")
+    let config = URLSessionConfiguration.ephemeral
+    config.timeoutIntervalForRequest = timeout
+    config.timeoutIntervalForResource = timeout
+    config.waitsForConnectivity = false
+    let session = URLSession(configuration: config)
+    var request = URLRequest(url: url)
+    request.timeoutInterval = timeout
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    let task = session.dataTask(with: request) { _, response, error in
+      defer { semaphore.signal() }
+      if let error {
+        result = (false, "\(url.host ?? url.absoluteString) error=\(error.localizedDescription)")
+        return
+      }
+      if let http = response as? HTTPURLResponse {
+        if (200 ... 399).contains(http.statusCode) {
+          result = (true, "\(url.host ?? url.absoluteString) status=\(http.statusCode)")
+        } else {
+          result = (false, "\(url.host ?? url.absoluteString) status=\(http.statusCode)")
+        }
+        return
+      }
+      result = (false, "\(url.host ?? url.absoluteString) no_http_response")
+    }
+    task.resume()
+    let waitResult = semaphore.wait(timeout: .now() + timeout + 0.2)
+    session.invalidateAndCancel()
+    if waitResult == .timedOut {
+      return (false, "\(url.host ?? url.absoluteString) timeout")
+    }
+    return result
   }
 }
