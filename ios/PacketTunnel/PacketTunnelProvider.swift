@@ -33,7 +33,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
   private let ipv6Address = "fdfe:dcba:9876::1"
   private let ipv6PrefixLength = 126
   private let tunnelMTU = 1500
-  private let mixedProxyPort = 7890
   private let pathRestartThrottle: TimeInterval = 2.0
   private let minCoreUptimeBeforePathRefresh: TimeInterval = 15.0
   private var socketProtector: SocketProtectorAdapter?
@@ -355,35 +354,10 @@ tun:
       index += 1
     }
     
-    let tunInjectedConfig: String
     if !replacedTun {
-      tunInjectedConfig = configContent.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + injectedBlock + "\n"
-    } else {
-      tunInjectedConfig = output.joined(separator: "\n")
+      return configContent.trimmingCharacters(in: .whitespacesAndNewlines) + "\n\n" + injectedBlock + "\n"
     }
-    return ensureMixedProxyPort(tunInjectedConfig)
-  }
-
-  private func ensureMixedProxyPort(_ configContent: String) -> String {
-    let lines = configContent.components(separatedBy: .newlines)
-    var output: [String] = []
-    var replaced = false
-
-    for line in lines {
-      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-      let isTopLevelMixedPort = !line.hasPrefix(" ") && !line.hasPrefix("\t") && trimmed.hasPrefix("mixed-port:")
-      if !replaced && isTopLevelMixedPort {
-        output.append("mixed-port: \(mixedProxyPort)")
-        replaced = true
-      } else {
-        output.append(line)
-      }
-    }
-
-    if !replaced {
-      let suffix = output.last?.isEmpty == true ? "" : "\n"
-      return output.joined(separator: "\n") + "\(suffix)mixed-port: \(mixedProxyPort)\n"
-    }
+    
     return output.joined(separator: "\n")
   }
 
